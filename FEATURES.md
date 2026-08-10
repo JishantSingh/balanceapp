@@ -70,7 +70,30 @@ Ordered by value ÷ effort:
 - ⛔ Auto-messaging customers without a merchant tap (the researched trust-killer)
 - ⛔ Feature sprawl that crowds the two-button loop (GST/inventory stays out unless it becomes an opt-in separate module)
 
-## 7 · User requirements reference (research, ranked)
+## 7 · UI/UX design principles (research findings)
+
+The rules Bahi's interface follows, with the evidence behind them — and an honest audit of where we stand.
+
+**Patterns with evidence:**
+
+| Principle | Evidence | Bahi today |
+|---|---|---|
+| Two-verb entry buttons, full-width, pinned bottom, **never relabeled or moved** | Fixed positions build muscle memory for novice users (Google NBU); OkCredit measured **+1.7% activation from button wording alone** — copy on these buttons is load-bearing | ✅ (labels changing once to Given/Received per user request, then frozen) |
+| Red = due, green = received/advance, **everywhere** | Color does the reading for low-literacy users; the home list doubles as the collections dashboard | ✅ |
+| Customer list **is** the home screen — no dashboard, no charts | Khatabook succeeded by digitizing the paper khata habit, not teaching bookkeeping | ✅ |
+| Amount-first entry; date defaults to today; note/photo optional | Universal across the category; matches how entries are narrated aloud | ✅ |
+| Icon + text labels together, never icon-only for critical actions | NBU: icons alone fail for low digital literacy | ⚠️ gear/refresh are icon-only; FAB is correct |
+| Large tap targets, high contrast, big numerals, lakh/crore digit grouping | Entry-level Androids, older eyes, shop lighting | ✅ (en-IN grouping shipped) |
+| **Vibrant over sparse** — pale minimalism reads as "empty/broken" to this audience | Google NBU field research; UC Browser's dense vibrancy beat clean minimalism in India | ✅ warm paper + strong red/green; keep type big, don't let it go pale |
+| Language picker at first launch; **Hinglish as its own language**; money words stay vernacular (udhaar, jama, hisaab) | 30%+ of Khatabook users choose non-English; Hinglish tested **better than proper Hindi** | ❌ English-only — biggest UI gap (§3) |
+| Trust copy **at the point of request**, not in a policy page | Google Station prints "Your number is safe with us" beside the phone field | ❌ planned (§3) |
+| Chat-style / two-column ledger history — borrow the WhatsApp mental model | "If you can use WhatsApp, you can use it" is the minimal apps' entire pitch | ✅ two-column you-gave/you-got |
+| Statement/PDF as the dispute-settling artifact | The thing merchants physically show customers during an argument | ❌ planned (§3) |
+| Offline entry that never silently fails | Any entry lost to weak network = broken khata = uninstall | ⚠️ reads work offline; writes don't queue yet (§4) |
+
+**Anti-patterns (all currently absent — keep it that way):** OTP/login walls before first value (challengers advertise "no OTP" as a headline feature) · ads/upsell nags inside a money ledger · superapp sprawl crowding the two-button loop · messaging the merchant's customers without a merchant tap · long scrolling forms · accounting jargon (debit/credit) · UI overhauls — when Khatabook shipped redesigns, users left; evolve incrementally.
+
+## 8 · User requirements reference (research, ranked)
 
 1. Entry a 55-year-old can do in two taps — complexity and UI churn are the documented adoption killers
 2. Reminders that recover money: free, WhatsApp, balance stated, way to pay
@@ -83,7 +106,7 @@ Ordered by value ÷ effort:
 9. Staff/family access with limits
 10. Coexists with UPI and paper (parallel-running against the paper bahi is the conversion path)
 
-## 8 · Open questions
+## 9 · Open questions
 
 - **Naming:** an established Play Store app is already "Bahi Khata" (bahikhataapp.com) with adjacent own-your-data positioning. Rename before wider distribution?
 - **Language priority:** Hinglish first, then Hindi script, then which regional language?
