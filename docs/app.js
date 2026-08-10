@@ -1018,6 +1018,7 @@ function openTxnForm(type, txn) {
   const title = $('txn-title');
   title.textContent = type === 'received' ? 'Received' : 'Given';
   title.className = 'sheet-title ' + (type === 'received' ? 'got' : 'gave');
+  $('txn-save').className = 'btn btn-ink ' + (type === 'received' ? 'got' : 'gave');
   $('txn-cur').textContent = (config && config.currency) || '₹';
   $('txn-amount').value = txn ? String(txn.amount) : '';
   $('txn-date').value = txn ? isoOf(txn.date) : todayISO();
