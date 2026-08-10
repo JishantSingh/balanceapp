@@ -1,5 +1,5 @@
 /**
- * Bahi — Google Sheets backend API (Khatabook-style udhaar ledger) · v4
+ * Bahi — Google Sheets backend API (Khatabook-style udhaar ledger) · v5
  *
  * Sheets (columns are created/added automatically):
  *   "user":        user_id | name | created_at | phone | cohort | last_reminded | token
@@ -49,7 +49,7 @@ function apiKey_() {
 
 // Backend version + where released code is published. The self-updater
 // refuses anything whose hashes don't match the release manifest.
-const BAHI_VERSION = 4;
+const BAHI_VERSION = 5;
 const RELEASE_BASE = 'https://raw.githubusercontent.com/JishantSingh/balanceapp/main/apps-script/';
 const RELEASE_MANIFEST = RELEASE_BASE + 'release.json';
 
