@@ -2,6 +2,17 @@
 
 *Working doc for dev runs. Feature rationale and research live in [FEATURES.md](FEATURES.md).*
 
+## Current state — as of 10 Aug 2026 (read this first on resume)
+
+- **Live app:** https://jishantsingh.github.io/balanceapp/ — GitHub Pages from `main:/docs` of the public repo `JishantSingh/balanceapp`. Shell cache `bahi-shell-v4`; bump it in `docs/sw.js` on any shell change (users then get the tap-to-update toast).
+- **Live backend:** Apps Script **v3 + Advanced Drive Service photos** deployed on the **"Ledger (Bahi test)"** spreadsheet (a copy — the original "Ledger" sheet is untouched). Same `/exec` deployment since day one; updates go via Manage deployments → ✏️ → New version. Owner has granted all three narrow scopes.
+- **Verified working end-to-end on the real deployment:** invite links, offline write queue (chip → sync → sheet), passbook links (all 10 customers have tokens), photo attach/fetch/trash via Drive, update toast, `{passbook}` graceful fallback.
+- **Test data:** 10 customers / 22 transactions; every customer's `phone` filled with the owner's two numbers alternating (so reminder/passbook tests loop back to the owner).
+- **Engineering gotchas learned:** `DriveApp` refuses the narrow `drive.file` scope (hence Advanced Drive Service + `script.external_request` for reading bytes); trashed photos stay readable to the owner's token for ~30 days (normal Drive trash); Apps Script serves via 302 → always `fetch`/`curl -L`; POST as `text/plain` to avoid CORS preflight.
+- **Sprint 2 candidates (not yet committed):** UPI ID in reminders (backlog #2) and per-customer statement (#3) — both small, collection-critical.
+- **Parked with decisions recorded:** scheduled reminders (#1), config sheet tab (#12).
+- Product decisions + research live in [FEATURES.md](FEATURES.md); artifacts: feature plan `claude.ai/code/artifact/7a53ebbc-…`, research memo `…/2ee5a4f8-…`, this doc `…/398d125b-…`.
+
 ## Sprint 1 — "Passbook & Photos" (current)
 
 Goal: ship the test user's approved requests, minus reminders (parked → backlog #1).
@@ -36,5 +47,6 @@ Out of scope for Sprint 1: everything below.
 
 ## Done
 
+- **Update-ready toast — shipped 10 Aug 2026.** New app versions self-announce ("Naya version aa gaya — tap karein ⟳"); tap reloads into the new version; re-checks on every app foreground. Toast centering fixed.
 - **Sprint 1 — shipped 10 Aug 2026.** All five items live: Given/Received buttons, passbook links, photos, offline write queue, docs. Verified: real-backend queue round-trip (offline entry → pending chip → synced to sheet → deleted), demo photo round-trip (compress → save → 📎 → view), passbook page render, graceful `{passbook}` fallback on pre-v3 backends. Merchant redeploy of Code.gs v3 + manifest required for tokens/photos to activate (README → "Updating an existing deployment").
 - v1 core app (ledger, reminders, invite links, PWA) — shipped 10 Aug 2026
