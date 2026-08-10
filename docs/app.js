@@ -61,9 +61,23 @@ function toast(msg, isError) {
   const el = $('toast');
   el.textContent = msg;
   el.classList.toggle('err', !!isError);
+  el.classList.remove('update');
+  el.onclick = null;
   el.hidden = false;
   clearTimeout(toast._t);
   toast._t = setTimeout(() => { el.hidden = true; }, 3200);
+}
+
+// Persistent, tappable toast shown when a new app version finished
+// downloading in the background — tapping reloads straight into it.
+function showUpdateToast() {
+  const el = $('toast');
+  el.textContent = 'Naya version aa gaya — tap karein ⟳';
+  el.classList.remove('err');
+  el.classList.add('update');
+  el.hidden = false;
+  clearTimeout(toast._t);
+  el.onclick = () => location.reload();
 }
 
 function busy(on) { $('busy').hidden = !on; }
@@ -954,7 +968,22 @@ function init() {
   }
 
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    navigator.serviceWorker.register('sw.js').then((reg) => {
+      reg.addEventListener('updatefound', () => {
+        const fresh = reg.installing;
+        if (!fresh) return;
+        fresh.addEventListener('statechange', () => {
+          // "installed" with an existing controller = an update, not a first install
+          if (fresh.state === 'installed' && navigator.serviceWorker.controller) {
+            showUpdateToast();
+          }
+        });
+      });
+      // installed PWAs can stay alive for days — re-check on every foreground
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') reg.update().catch(() => {});
+      });
+    }).catch(() => {});
   }
 }
 
