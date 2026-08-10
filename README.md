@@ -38,10 +38,10 @@ Either use an existing Ledger sheet, or create a blank Google Sheet — the scri
 2. Paste all of [`apps-script/Code.gs`](apps-script/Code.gs) into `Code.gs`, replacing what's there
 3. **Project Settings (gear) → tick "Show `appsscript.json` manifest file in editor"**, then paste [`apps-script/appsscript.json`](apps-script/appsscript.json) over it — this narrows the permission prompt from "all your spreadsheets" to *only this spreadsheet*
 4. Change `API_KEY` at the top of `Code.gs` to a long random string (this is the merchant's password)
-4. **Deploy → New deployment → Web app**, with:
+5. **Deploy → New deployment → Web app**, with:
    - *Execute as:* **Me**
    - *Who has access:* **Anyone**
-5. Authorize when asked, then copy the **`/exec` URL**
+6. Authorize when asked, then copy the **`/exec` URL**
 
 > Re-deploying later (after script changes) — use **Deploy → Manage deployments → Edit → New version** so the URL stays the same.
 
