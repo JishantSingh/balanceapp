@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Bahi — Udhaar Khata</title>
+<meta name="description" content="Your udhaar ledger, on your own Google Sheet. No company in the middle.">
+<meta name="theme-color" content="#f5f0e4" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1a1712" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..900;1,9..144,300..900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="grain" aria-hidden="true"></div>
+
+<!-- ============ CONNECT (first run) ============ -->
+<section id="screen-connect" class="screen" hidden>
+  <div class="connect-wrap">
+    <div class="brandmark reveal">
+      <div class="brand-hindi">बही</div>
+      <div class="brand-latin">·&nbsp;udhaar khata&nbsp;·</div>
+    </div>
+    <p class="connect-tag reveal d1">A ledger that lives in <em>your own</em> Google&nbsp;Sheet.<br>No company in the middle. Free, forever.</p>
+
+    <div class="card connect-card reveal d2">
+      <label class="field">
+        <span>Apps Script web app URL</span>
+        <input id="cfg-url" type="url" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off">
+      </label>
+      <label class="field">
+        <span>API key</span>
+        <input id="cfg-key" type="text" placeholder="the secret you set in Code.gs" autocomplete="off">
+      </label>
+      <button id="btn-connect" class="btn btn-ink btn-wide">Open my ledger</button>
+      <p id="connect-error" class="form-error" hidden></p>
+    </div>
+
+    <div class="or-rule reveal d3"><span>or</span></div>
+    <button id="btn-demo" class="btn btn-ghost btn-wide reveal d3">Try the demo ledger</button>
+    <p class="connect-foot reveal d4">Setup takes ~10 minutes with your Google account.<br>See the README for the step-by-step guide.</p>
+  </div>
+</section>
+
+<!-- ============ HOME ============ -->
+<section id="screen-home" class="screen" hidden>
+  <header class="masthead">
+    <div class="wordmark"><span class="wm-hindi">बही</span><span class="wm-dot">·</span><span class="wm-latin">khata</span></div>
+    <div class="masthead-actions">
+      <span id="chip-demo" class="chip chip-demo" hidden>demo</span>
+      <span id="chip-offline" class="chip chip-offline" hidden>offline</span>
+      <button id="btn-refresh" class="iconbtn" title="Refresh" aria-label="Refresh">
+        <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 6.3M20 5v6h-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button id="btn-settings" class="iconbtn" title="Settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 2.8v3M12 18.2v3M21.2 12h-3M5.8 12h-3M18.5 5.5l-2.1 2.1M7.6 16.4l-2.1 2.1M18.5 18.5l-2.1-2.1M7.6 7.6 5.5 5.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+  </header>
+  <div class="rule-double"></div>
+
+  <div class="summary card">
+    <div class="summary-cell">
+      <span class="summary-label">you'll get</span>
+      <span id="sum-get" class="summary-amt amt-due">₹0</span>
+    </div>
+    <div class="summary-sep"></div>
+    <div class="summary-cell">
+      <span class="summary-label">you'll give</span>
+      <span id="sum-give" class="summary-amt amt-adv">₹0</span>
+    </div>
+    <div class="summary-sep"></div>
+    <div class="summary-cell">
+      <span class="summary-label">customers</span>
+      <span id="sum-count" class="summary-amt">0</span>
+    </div>
+  </div>
+
+  <div class="searchbar">
+    <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m20 20-3.8-3.8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    <input id="search" type="search" placeholder="Search customer…" autocomplete="off">
+  </div>
+
+  <ol id="customer-list" class="customer-list"></ol>
+  <div id="home-empty" class="empty" hidden>
+    <p class="empty-title">No customers yet</p>
+    <p class="empty-sub">Add your first customer and start<br>writing udhaar in your own bahi.</p>
+  </div>
+
+  <button id="fab" class="fab" aria-label="Add customer">
+    <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+    <span>Customer</span>
+  </button>
+</section>
+
+<!-- ============ CUSTOMER ============ -->
+<section id="screen-customer" class="screen" hidden>
+  <header class="masthead customer-head">
+    <button id="btn-back" class="iconbtn" aria-label="Back">
+      <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <button id="cust-head-main" class="cust-head-main" title="Edit customer">
+      <span id="cust-avatar" class="avatar">C</span>
+      <span class="cust-head-text">
+        <span id="cust-name" class="cust-name">Customer</span>
+        <span id="cust-meta" class="cust-meta">tap to edit</span>
+      </span>
+    </button>
+    <div class="masthead-actions">
+      <a id="btn-call" class="iconbtn" title="Call" aria-label="Call" hidden>
+        <svg viewBox="0 0 24 24"><path d="M6.5 3.5h3l1.5 4-2 1.5a12 12 0 0 0 5.5 5.5l1.5-2 4 1.5v3a2 2 0 0 1-2 2A16 16 0 0 1 4.5 5.5a2 2 0 0 1 2-2Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+      </a>
+    </div>
+  </header>
+  <div class="rule-double"></div>
+
+  <div class="balance-card card">
+    <span id="bal-label" class="summary-label">balance</span>
+    <span id="bal-amt" class="balance-amt">₹0</span>
+    <span id="bal-word" class="balance-word">settled up</span>
+    <button id="btn-remind" class="btn btn-wa" hidden>
+      <svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 0 0-7.8 13.5L3 21l4.7-1.2A9 9 0 1 0 12 3Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M9 8.5c0 4 2.5 6.5 6.5 6.5l.8-1.8-2-1-.9.7c-1.1-.5-1.8-1.2-2.3-2.3l.7-.9-1-2Z" fill="currentColor"/></svg>
+      Remind on WhatsApp
+    </button>
+    <p id="remind-hint" class="remind-hint" hidden>Add a phone number to send reminders</p>
+  </div>
+
+  <div class="ledger-cols">
+    <span class="col-label col-gave">you gave</span>
+    <span class="col-label col-got">you got</span>
+  </div>
+  <ol id="txn-list" class="txn-list"></ol>
+  <div id="cust-empty" class="empty" hidden>
+    <p class="empty-title">Fresh page</p>
+    <p class="empty-sub">No entries for this customer yet.</p>
+  </div>
+
+  <div class="actionbar">
+    <button id="btn-gave" class="btn btn-gave">You gave ₹</button>
+    <button id="btn-got" class="btn btn-got">You got ₹</button>
+  </div>
+</section>
+
+<!-- ============ TRANSACTION DIALOG ============ -->
+<dialog id="dlg-txn" class="sheet">
+  <form id="form-txn" method="dialog" novalidate>
+    <div id="txn-title" class="sheet-title">You gave</div>
+    <label class="field field-amt">
+      <span>Amount</span>
+      <div class="amt-input"><b id="txn-cur">₹</b><input id="txn-amount" type="text" inputmode="decimal" placeholder="0" autocomplete="off" required></div>
+    </label>
+    <label class="field">
+      <span>Date</span>
+      <input id="txn-date" type="date" required>
+    </label>
+    <label class="field">
+      <span>Note <em>(optional)</em></span>
+      <input id="txn-comment" type="text" placeholder="e.g. slip, parchi, books…" autocomplete="off">
+    </label>
+    <p id="txn-error" class="form-error" hidden></p>
+    <div class="sheet-actions">
+      <button type="button" id="txn-delete" class="btn btn-danger-ghost" hidden>Delete</button>
+      <span class="flex-spring"></span>
+      <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+      <button type="submit" id="txn-save" class="btn btn-ink">Save entry</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ============ CUSTOMER DIALOG ============ -->
+<dialog id="dlg-customer" class="sheet">
+  <form id="form-customer" method="dialog" novalidate>
+    <div id="cust-dlg-title" class="sheet-title">New customer</div>
+    <label class="field">
+      <span>Name</span>
+      <input id="cust-input-name" type="text" placeholder="e.g. Chetan Kirana Store" autocomplete="off" required>
+    </label>
+    <label class="field">
+      <span>Phone <em>(for WhatsApp reminders)</em></span>
+      <input id="cust-input-phone" type="tel" placeholder="98765 43210" autocomplete="off">
+    </label>
+    <p id="cust-error" class="form-error" hidden></p>
+    <div class="sheet-actions">
+      <button type="button" id="cust-delete" class="btn btn-danger-ghost" hidden>Delete</button>
+      <span class="flex-spring"></span>
+      <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+      <button type="submit" id="cust-save" class="btn btn-ink">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ============ SETTINGS DIALOG ============ -->
+<dialog id="dlg-settings" class="sheet">
+  <form id="form-settings" method="dialog" novalidate>
+    <div class="sheet-title">Settings</div>
+    <label class="field">
+      <span>Shop / merchant name</span>
+      <input id="set-merchant" type="text" placeholder="e.g. Singh General Store" autocomplete="off">
+    </label>
+    <div class="field-row">
+      <label class="field">
+        <span>Currency</span>
+        <input id="set-currency" type="text" value="₹" maxlength="4">
+      </label>
+      <label class="field">
+        <span>Country code</span>
+        <input id="set-cc" type="text" value="91" inputmode="numeric" maxlength="4">
+      </label>
+    </div>
+    <label class="field">
+      <span>WhatsApp reminder message</span>
+      <textarea id="set-template" rows="4" spellcheck="false"></textarea>
+      <small class="field-help">Use {name}, {amount} and {merchant} — they get filled in automatically.</small>
+    </label>
+    <details class="settings-conn">
+      <summary>Connection</summary>
+      <label class="field"><span>Apps Script URL</span><input id="set-url" type="url" autocomplete="off"></label>
+      <label class="field"><span>API key</span><input id="set-key" type="text" autocomplete="off"></label>
+      <button type="button" id="btn-disconnect" class="btn btn-danger-ghost btn-wide">Disconnect this device</button>
+    </details>
+    <div class="sheet-actions">
+      <span class="flex-spring"></span>
+      <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+      <button type="submit" class="btn btn-ink">Save settings</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" hidden></div>
+<div id="busy" class="busy" hidden><span></span></div>
+
+<script src="app.js"></script>
+</body>
+</html>
