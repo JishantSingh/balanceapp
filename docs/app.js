@@ -36,6 +36,11 @@ let photoState = { mode: 'none', b64: null, id: null };
 const photoCache = {};   // fileId -> dataURI (in-memory)
 const demoPhotos = {};   // demo fileId -> b64 (in-memory, demo mode only)
 
+// tiny ledger thumbnails, persisted so the list stays instant + offline
+const LS_THUMBS = 'bahi.thumbs';
+let thumbs = loadJSON(LS_THUMBS) || {};   // fileId -> {d: dataURI, t: ts}
+const thumbLoading = new Set();
+
 function loadJSON(key) {
   try { return JSON.parse(localStorage.getItem(key)); } catch (e) { return null; }
 }
@@ -499,12 +504,77 @@ function renderCustomer() {
   }).join('');
 
   $('cust-empty').hidden = txns.length > 0;
+  loadLedgerThumbs();
 }
 
 function txnCell(t) {
-  return `<div class="txn-amt">${money(t.amount)}</div>` +
+  const hasPhoto = t.photo && t.photo !== 'pending';
+  const thumb = hasPhoto
+    ? (thumbs[t.photo]
+        ? `<img class="txn-thumb" data-pid="${escapeHtml(t.photo)}" src="${thumbs[t.photo].d}" alt="photo">`
+        : `<span class="txn-thumb txn-thumb-ph" data-pid="${escapeHtml(t.photo)}">📎</span>`)
+    : '';
+  return `<div class="txn-body"><div class="txn-text">` +
+    `<div class="txn-amt">${money(t.amount)}</div>` +
     (t.comment ? `<div class="txn-note">${escapeHtml(t.comment)}</div>` : '') +
-    `<div class="txn-date">${fmtDate(t.date)}${t.photo ? ' 📎' : ''}</div>`;
+    `<div class="txn-date">${fmtDate(t.date)}${t.photo === 'pending' ? ' 📎' : ''}</div>` +
+    `</div>${thumb}</div>`;
+}
+
+// fetch full photos one at a time, shrink to 96px squares, cache locally
+async function loadLedgerThumbs() {
+  const ids = [...new Set(
+    [...document.querySelectorAll('#txn-list .txn-thumb-ph')].map((el) => el.dataset.pid)
+  )].filter((id) => id && !thumbs[id] && !thumbLoading.has(id));
+  for (const id of ids) {
+    thumbLoading.add(id);
+    try {
+      if (!photoCache[id]) {
+        const data = await api('photo', { id });
+        if (!data.b64) throw new Error('not found');
+        photoCache[id] = `data:${data.mime || 'image/jpeg'};base64,` + data.b64;
+      }
+      thumbs[id] = { d: await makeThumb(photoCache[id]), t: Date.now() };
+      saveThumbs();
+      document.querySelectorAll(`#txn-list .txn-thumb-ph[data-pid="${CSS.escape(id)}"]`).forEach((el) => {
+        const img = document.createElement('img');
+        img.className = 'txn-thumb';
+        img.dataset.pid = id;
+        img.src = thumbs[id].d;
+        img.alt = 'photo';
+        el.replaceWith(img);
+      });
+    } catch (e) { /* keep the 📎 placeholder */ }
+    finally { thumbLoading.delete(id); }
+  }
+}
+
+function makeThumb(dataURI) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const S = 96;
+      const c = document.createElement('canvas');
+      c.width = S; c.height = S;
+      const side = Math.min(img.width, img.height);
+      c.getContext('2d').drawImage(
+        img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, S, S);
+      resolve(c.toDataURL('image/jpeg', 0.7));
+    };
+    img.onerror = () => reject(new Error('thumb failed'));
+    img.src = dataURI;
+  });
+}
+
+function saveThumbs() {
+  const keys = Object.keys(thumbs);
+  if (keys.length > 120) {
+    keys.sort((a, b) => thumbs[a].t - thumbs[b].t)
+      .slice(0, keys.length - 120)
+      .forEach((k) => delete thumbs[k]);
+  }
+  try { saveJSON(LS_THUMBS, thumbs); }
+  catch (e) { thumbs = {}; try { saveJSON(LS_THUMBS, thumbs); } catch (e2) { /* skip caching */ } }
 }
 
 function goHome() {
@@ -683,22 +753,26 @@ function setPhotoUI() {
 }
 
 async function viewCurrentPhoto() {
+  if (photoState.mode === 'new') {
+    const img = $('photo-img');
+    img.src = 'data:image/jpeg;base64,' + photoState.b64;
+    $('dlg-photo').showModal();
+  } else if (photoState.mode === 'existing') {
+    viewPhotoById(photoState.id);
+  }
+}
+
+async function viewPhotoById(id) {
   const img = $('photo-img');
   img.src = '';
   try {
-    if (photoState.mode === 'new') {
-      img.src = 'data:image/jpeg;base64,' + photoState.b64;
-    } else if (photoState.mode === 'existing') {
-      if (!photoCache[photoState.id]) {
-        toast('Loading photo…');
-        const data = await api('photo', { id: photoState.id });
-        if (!data.b64) throw new Error('Photo not found');
-        photoCache[photoState.id] = `data:${data.mime || 'image/jpeg'};base64,` + data.b64;
-      }
-      img.src = photoCache[photoState.id];
-    } else {
-      return;
+    if (!photoCache[id]) {
+      toast('Loading photo…');
+      const data = await api('photo', { id });
+      if (!data.b64) throw new Error('Photo not found');
+      photoCache[id] = `data:${data.mime || 'image/jpeg'};base64,` + data.b64;
     }
+    img.src = photoCache[id];
     $('dlg-photo').showModal();
   } catch (err) {
     toast('Could not load photo: ' + err.message, true);
@@ -818,6 +892,8 @@ function init() {
   $('btn-gave').addEventListener('click', () => openTxnForm('given', null));
   $('btn-got').addEventListener('click', () => openTxnForm('received', null));
   $('txn-list').addEventListener('click', (e) => {
+    const th = e.target.closest('.txn-thumb');
+    if (th && th.dataset.pid) { viewPhotoById(th.dataset.pid); return; }
     const row = e.target.closest('.txn-row');
     if (!row) return;
     const t = db.transactions.find((x) => x.id === row.dataset.id);

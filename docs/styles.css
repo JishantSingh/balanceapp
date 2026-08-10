@@ -419,6 +419,20 @@ body {
 .txn-cell.got .txn-amt { color: var(--green); }
 .txn-note { color: var(--text-2); font-size: 0.85rem; margin-top: 1px; overflow-wrap: anywhere; }
 .txn-date { font-size: 0.7rem; color: var(--text-3); margin-top: 3px; font-variant-numeric: tabular-nums; }
+.txn-body { display: flex; align-items: center; gap: 10px; }
+.txn-text { flex: 1; min-width: 0; }
+.txn-thumb {
+  width: 44px; height: 44px; flex: none;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  object-fit: cover;
+  cursor: pointer;
+}
+.txn-thumb-ph {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--inset);
+  font-size: 0.95rem;
+}
 
 .date-divider {
   font-size: 0.68rem; font-weight: 600;

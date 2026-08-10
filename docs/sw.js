@@ -1,7 +1,7 @@
 /* Bahi service worker — caches the app shell so the app opens instantly
    and works offline (data itself is cached by app.js in localStorage). */
 
-const CACHE = 'bahi-shell-v8';
+const CACHE = 'bahi-shell-v9';
 const SHELL = [
   './',
   './index.html',
