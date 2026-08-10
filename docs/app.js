@@ -355,6 +355,47 @@ function openCustomer(id, push) {
   if (push !== false) history.pushState({ customer: id }, '');
 }
 
+// ---------------------------------------------------------------- invite links
+
+// The connection travels in the URL fragment, which browsers never send to
+// servers. Anyone holding the link has full access to that ledger.
+function applyInviteLink() {
+  const m = /#s=([A-Za-z0-9\-_]+)/.exec(location.hash);
+  if (!m) return false;
+  let payload;
+  try {
+    payload = JSON.parse(atob(m[1].replace(/-/g, '+').replace(/_/g, '/')));
+  } catch (e) { return false; }
+  if (!payload.u || !/^https:\/\/script\.google(?:usercontent)?\.com\//.test(payload.u)) return false;
+  config = Object.assign(
+    { currency: '₹', cc: '91', merchant: '', template: DEFAULT_TEMPLATE },
+    config || {},
+    { url: payload.u, key: payload.k || '', demo: false }
+  );
+  saveJSON(LS_CONFIG, config);
+  history.replaceState(null, '', location.pathname + location.search);
+  return true;
+}
+
+function inviteLink() {
+  const payload = btoa(JSON.stringify({ u: config.url, k: config.key }))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return location.origin + location.pathname + '#s=' + payload;
+}
+
+function copyText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text);
+  }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand('copy');
+  ta.remove();
+  return Promise.resolve();
+}
+
 // ---------------------------------------------------------------- reminders
 
 function reminderLink(u, bal) {
@@ -441,7 +482,13 @@ function init() {
     $('set-url').value = config.url || '';
     $('set-key').value = config.key || '';
     document.querySelector('.settings-conn').open = false;
+    $('btn-invite').hidden = !!config.demo || !config.url;
     $('dlg-settings').showModal();
+  });
+  $('btn-invite').addEventListener('click', () => {
+    copyText(inviteLink())
+      .then(() => toast('Invite link copied — anyone with it gets full access'))
+      .catch(() => toast('Could not copy link', true));
   });
   $('form-settings').addEventListener('submit', () => {
     config.merchant = $('set-merchant').value.trim();
@@ -585,13 +632,15 @@ function init() {
   document.querySelectorAll('[data-close]').forEach((b) =>
     b.addEventListener('click', () => b.closest('dialog').close()));
 
-  // boot
+  // boot — an invite link (#s=…) carries a ready-made connection
+  const invited = applyInviteLink();
   if (!config) {
     show('connect');
   } else {
     show('home');
     render();          // cached copy immediately
     refresh(true);     // then sync in background
+    if (invited) toast('Connected to shared ledger ✓');
   }
 
   if ('serviceWorker' in navigator) {

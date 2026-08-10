@@ -63,6 +63,12 @@ https://jishantsingh.github.io/balanceapp/
 
 It now opens full-screen from its own icon, like any app. Same URL works on iPhone (Share → Add to Home Screen) and desktop.
 
+### Sharing a connected ledger (invite links)
+
+Once connected, **Settings → Copy invite link** produces a single URL that opens the app *already connected* — perfect for a second phone, a family member, or a shop worker. The connection rides in the URL fragment (`#s=…`), which browsers never send to servers.
+
+> An invite link carries the API key: anyone holding it has **full read/write access** to that ledger. Share it like you'd share a key.
+
 ## Distributing to many merchants
 
 The clean "AppSheet-like" flow:
