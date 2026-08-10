@@ -56,6 +56,7 @@ Out of scope for Sprint 1: everything below.
 
 1. **Scheduled reminders — cohorts + due queue + guided "Send all"** *(parked 10 Aug 2026)*. Per-customer frequency (Off/Weekly/15 days/Monthly, default Monthly), "🔔 N due" strip, guided send-back-next run stamping `last_reminded`. Decisions and WhatsApp constraints already settled (no free auto-send; WhatsApp-Web automation rejected — ToS/ban risk + needs a server; official Business API only ever as merchant-pays opt-in). Backend fields (`cohort`, `last_reminded`, `remindLog`) ship dormant in v3 — building this later is frontend-only.
 2. **UPI ID in reminders** — merchant sets UPI ID once; reminders carry a pay link against the balance. Small, collection-critical.
+2b. **Backend self-updater** *(decided 11 Aug 2026 — chosen direction, see ARCHITECTURE.md §5 Option B)*: script updates itself via Apps Script API (updateContent → versions.create → deployments.update on the same /exec URL) + daily trigger against a pinned release manifest. Needs scopes `script.projects`/`script.deployments`/`script.scriptapp` + the merchant's one-time Apps Script API toggle. Scope-stable releases apply silently; scope-adding releases require re-consent by design. Spike on our test deployment as part of Code.gs v4. Contract freeze itself is DEFERRED until Jishant declares the release event.
 3. **Per-customer statement (PDF/print)** — the dispute-settling artifact.
 4. **Hinglish + Hindi UI** — strings file + first-launch language picker; Hinglish first.
 5. **Contacts import** — Contact Picker API (Chrome/Android).

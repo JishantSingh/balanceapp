@@ -64,9 +64,11 @@ Merchants **will** be on different backend versions — permanently. Even with a
 
 This is the same contract that lets browsers talk to decade-old web servers: versioned, additive, feature-detected. It is what we "rely on for distribution": **a merchant from a two-year-old template copy must still work with today's frontend.**
 
-### 3.5 · The frozen contract (v1–v3 surface, already deployed — invariant forever)
+### 3.5 · The contract (armed, not yet frozen)
 
-The asymmetry is stark: **we can fix any frontend mistake tomorrow; a backend mistake is deployed into Google accounts we can't reach.** So everything below is now protocol, not code — it can be *added to*, never changed:
+**Freeze status: deferred.** We are pre-release — the only deployment is our own test merchant, so breaking iterations to the surface below are allowed and expected. The freeze activates at an **explicit release event declared by Jishant**; from that moment the rules in this section bind forever. Until then, treat this section as the *draft* of what we'll be promising — every change to the surface should still be weighed as "are we happy to freeze this shape?"
+
+The asymmetry that motivates the eventual freeze: **we can fix any frontend mistake tomorrow; a backend mistake is deployed into Google accounts we can't reach.** At release, everything below becomes protocol, not code — it can be *added to*, never changed:
 
 **Transport:** GET with query params, or POST with a `text/plain` JSON body `{action, key?, …}` (no CORS preflight — invariant). Responses may arrive via 302 redirect; clients always follow. Envelope: `{ok:true, data}` | `{ok:false, error:<string>}`. **Error *text* is explicitly NOT contract** — the frontend must never parse messages (v4 adds an additive machine-readable `code` field for that).
 
@@ -100,15 +102,24 @@ There is deliberately **no runtime** central dependency: nothing a merchant does
 - When `v < LATEST_BE`, Settings shows: "Backend v3 → v5 available" with a one-tap flow: copy new Code.gs → open `script.google.com/d/<scriptId>/edit` directly → short Hinglish checklist for the paste + New version dance.
 - Cuts today's "find the README, find your script" friction to ~2 minutes of guided pasting. Still needs a human who can paste — acceptable for the helper persona.
 
-**Option B — True self-update (opt-in, prototype after v4):** the backend updates itself.
-- Mechanics (verified feasible; a community precedent exists): the script calls the Apps Script API on **itself** via `UrlFetchApp` + `ScriptApp.getOAuthToken()` — `projects.updateContent` with files fetched from our public repo (pinned tag), then `projects.versions.create` + `projects.deployments.update` so the existing `/exec` URL serves the new code.
-- Trigger: merchant taps "Update backend" in the app → FE calls a `selfUpdate` action → backend fetches, verifies, applies. Merchant-authorized per update; code source is the public repo at a pinned tag shown in the UI.
-- **Costs, stated honestly:** two extra OAuth scopes — `script.projects` and `script.deployments` — which are **broad** ("see and manage your Apps Script projects", all of them, not just this one), plus a one-time "enable Apps Script API" toggle in the merchant's settings. This cuts against our narrow-scopes trust story; it must be opt-in, clearly explained, and the no-thanks path (Option A) must stay first-class.
-- Failure containment: update runs in a staging pass (fetch + syntax-check via `versions.create` failing early); the old deployment version remains one click away in Manage deployments if anything breaks.
+**Option B — Silent self-update (chosen direction, 11 Aug 2026; mechanics verified):** the backend updates itself with **zero per-update user action**.
+
+*Mechanics — each verified against docs/working precedents:*
+1. The script calls the Apps Script API **on itself** via `UrlFetchApp` + `ScriptApp.getOAuthToken()`: `projects.updateContent` (new code → HEAD), then `projects.versions.create` + `projects.deployments.update` pointing the **existing** deployment at the new version — the `/exec` URL (and every invite/passbook link) survives. Updating-not-recreating the deployment is exactly the documented pattern for keeping a web app's URL.
+2. A **time-driven trigger** (installed programmatically, daily) checks a version manifest in our public repo; when a newer release exists, it fetches the pinned files and applies steps 1. No taps, no visits — updates land like the frontend's do. The FE's "Update backend" button remains as a manual "check now".
+3. Rollback: Apps Script keeps every version; Manage deployments → previous version is one click, and the updater can auto-revert if a post-update self-test (`list` against itself) fails.
+
+*One-time setup cost (at install, not per update):* three extra OAuth scopes — `script.projects`, `script.deployments`, `script.scriptapp` (triggers) — plus flipping the **"Google Apps Script API" toggle** at script.google.com/home/usersettings (Google requires it before the API will touch the user's scripts; without it, calls 403). These land in the same consent screen the merchant already sees at setup.
+
+*Hard limits (design around, can't remove):*
+- **Scope changes can never be silent.** If a new version's manifest adds an OAuth scope, executions fail until the merchant re-consents — so releases must keep scopes stable to auto-apply; scope-adding releases are "major" and go through the assisted flow. This is a guardrail, not just a limit: pushed code can never silently expand its own permissions.
+- `script.projects` is broad (all the merchant's script projects, not just Bahi). The trust story must present this honestly; decliners get Option A.
+
+*Security design (must ship with release, since auto-update = a code-delivery channel into merchant accounts):* the update source is our public repo at pinned tags; the release manifest (version + SHA-256 of each file) is **signed**, and the verifying public key is baked into the currently-deployed script. The updater applies nothing that doesn't verify. A compromised GitHub account alone therefore can't push code to merchants — the signing key must also be lost. During development, pinned-tag + hash check suffices; signing lands at the release event.
 
 **Option C — Shared Apps Script library (rejected).** A 10-line merchant stub delegating to our published library would centralize updates perfectly — and reintroduce exactly the dependency the product exists to avoid: every merchant's backend would **stop working** if our library account died. Central runtime dependency = not our product. (It also has deployment/version-pinning subtleties in webapps that make "instant updates" less certain than advertised.)
 
-**Recommendation: ship A in v4 unconditionally; prototype B behind opt-in; never C.** And regardless of A/B adoption, §3's skew contract is the real safety net.
+**Recommendation (updated 11 Aug 2026): B is the default path — build the self-updater into Code.gs v4 and spike it on our own test deployment first; A ships alongside as the fallback for merchants who decline the broader scopes; never C.** And regardless of adoption, §3's skew contract remains the safety net — silent updates shrink the version tail, they don't eliminate it.
 
 ## 6 · What this means for the near-term plan
 
