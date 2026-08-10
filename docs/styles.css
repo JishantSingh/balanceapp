@@ -15,6 +15,8 @@
   --red-soft: #f3ded7;
   --green: #2e6b4f;
   --green-soft: #dde8dc;
+  --amber: #8a6a1f;
+  --amber-wash: #efe6cd;
   --wa: #1f7a53;
   --shadow: 0 2px 0 var(--rule-strong);
   --shadow-pop: 4px 4px 0 rgba(35, 32, 26, 0.16);
@@ -36,6 +38,8 @@
     --red-soft: #3a241d;
     --green: #6fae8b;
     --green-soft: #1f2f24;
+    --amber: #cfa952;
+    --amber-wash: #332a15;
     --wa: #4fae7e;
     --shadow: 0 2px 0 var(--paper-deep);
     --shadow-pop: 4px 4px 0 rgba(0, 0, 0, 0.45);
@@ -490,4 +494,56 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .reveal, .customer-row, .txn-row, .sheet form, .toast { animation: none; }
+}
+
+/* ---------- pending-sync chip (offline write queue) ---------- */
+
+/* a <button> carrying .chip — strip the UA button look, keep .chip's mono type */
+.chip-pending {
+  appearance: none;
+  -webkit-appearance: none;
+  line-height: inherit;
+  color: var(--amber);
+  border-color: var(--amber);
+  background: var(--amber-wash);
+  cursor: pointer;
+}
+
+/* ---------- entry photos ---------- */
+
+.photo-row { display: flex; align-items: center; gap: 8px; }
+
+/* compact .btn.btn-ghost variant on the <label> wrapping the file input */
+.photo-add { padding: 8px 12px; font-size: 0.72rem; cursor: pointer; }
+
+/* photo viewer dialog */
+.sheet-photo img {
+  display: block;
+  max-width: 100%;
+  max-height: 60dvh;
+  margin: 0 auto 4px;
+  border-radius: 8px;
+  border: 1px solid var(--rule-strong);
+  object-fit: contain;
+}
+
+/* ---------- passbook (read-only customer view) ---------- */
+
+.pb-name { font-size: 1.3rem; font-weight: 620; margin-bottom: 2px; text-align: center; }
+
+.pb-status {
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--ink-soft);
+  padding: 24px 0;
+}
+
+.pb-foot {
+  text-align: center;
+  font-style: italic;
+  font-size: 0.8rem;
+  color: var(--ink-faint);
+  margin-top: 28px;
+  padding-bottom: 24px;
 }

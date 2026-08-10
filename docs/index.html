@@ -53,6 +53,7 @@
     <div class="masthead-actions">
       <span id="chip-demo" class="chip chip-demo" hidden>demo</span>
       <span id="chip-offline" class="chip chip-offline" hidden>offline</span>
+      <button id="chip-pending" class="chip chip-pending" hidden title="Entries waiting to sync — tap to retry"></button>
       <button id="btn-refresh" class="iconbtn" title="Refresh" aria-label="Refresh">
         <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 6.3M20 5v6h-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
@@ -140,9 +141,30 @@
   </div>
 
   <div class="actionbar">
-    <button id="btn-gave" class="btn btn-gave">You gave ₹</button>
-    <button id="btn-got" class="btn btn-got">You got ₹</button>
+    <button id="btn-gave" class="btn btn-gave">Given ₹</button>
+    <button id="btn-got" class="btn btn-got">Received ₹</button>
   </div>
+</section>
+
+<!-- ============ PASSBOOK (read-only customer view) ============ -->
+<section id="screen-passbook" class="screen" hidden>
+  <header class="masthead">
+    <div class="wordmark"><span class="wm-hindi">बही</span><span class="wm-dot">·</span><span class="wm-latin">passbook</span></div>
+  </header>
+  <div class="rule-double"></div>
+  <div class="balance-card card">
+    <span id="pb-name" class="pb-name">…</span>
+    <span class="summary-label">balance</span>
+    <span id="pb-amt" class="balance-amt">…</span>
+    <span id="pb-word" class="balance-word"></span>
+  </div>
+  <div class="ledger-cols">
+    <span class="col-label col-gave">given to you</span>
+    <span class="col-label col-got">you paid</span>
+  </div>
+  <ol id="pb-list" class="txn-list"></ol>
+  <p id="pb-status" class="pb-status">Loading your passbook…</p>
+  <p class="pb-foot">This passbook comes directly from your shopkeeper's own ledger. Entries update as the khata changes.</p>
 </section>
 
 <!-- ============ TRANSACTION DIALOG ============ -->
@@ -161,6 +183,14 @@
       <span>Note <em>(optional)</em></span>
       <input id="txn-comment" type="text" placeholder="e.g. slip, parchi, books…" autocomplete="off">
     </label>
+    <div class="field">
+      <span class="field-label">Photo <em>(bill / parchi, optional)</em></span>
+      <div class="photo-row">
+        <label class="btn btn-ghost photo-add">📷 <span id="txn-photo-label">Add photo</span><input id="txn-photo" type="file" accept="image/*" hidden></label>
+        <button type="button" id="txn-photo-view" class="btn btn-ghost" hidden>View</button>
+        <button type="button" id="txn-photo-remove" class="btn btn-ghost" hidden>✕</button>
+      </div>
+    </div>
     <p id="txn-error" class="form-error" hidden></p>
     <div class="sheet-actions">
       <button type="button" id="txn-delete" class="btn btn-danger-ghost" hidden>Delete</button>
@@ -214,7 +244,7 @@
     <label class="field">
       <span>WhatsApp reminder message</span>
       <textarea id="set-template" rows="4" spellcheck="false"></textarea>
-      <small class="field-help">Use {name}, {amount} and {merchant} — they get filled in automatically.</small>
+      <small class="field-help">Use {name}, {amount}, {merchant} and {passbook} — filled in automatically. {passbook} becomes the customer's private ledger link.</small>
     </label>
     <button type="button" id="btn-invite" class="btn btn-ghost btn-wide">🔗 Copy invite link for this ledger</button>
     <details class="settings-conn">
@@ -227,6 +257,17 @@
       <span class="flex-spring"></span>
       <button type="button" class="btn btn-ghost" data-close>Cancel</button>
       <button type="submit" class="btn btn-ink">Save settings</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ============ PHOTO VIEWER ============ -->
+<dialog id="dlg-photo" class="sheet sheet-photo">
+  <form method="dialog">
+    <img id="photo-img" alt="Attached bill photo">
+    <div class="sheet-actions">
+      <span class="flex-spring"></span>
+      <button type="submit" class="btn btn-ghost">Close</button>
     </div>
   </form>
 </dialog>

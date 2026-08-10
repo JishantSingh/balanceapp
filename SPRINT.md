@@ -35,5 +35,5 @@ Out of scope for Sprint 1: everything below.
 
 ## Done
 
+- **Sprint 1 — shipped 10 Aug 2026.** All five items live: Given/Received buttons, passbook links, photos, offline write queue, docs. Verified: real-backend queue round-trip (offline entry → pending chip → synced to sheet → deleted), demo photo round-trip (compress → save → 📎 → view), passbook page render, graceful `{passbook}` fallback on pre-v3 backends. Merchant redeploy of Code.gs v3 + manifest required for tokens/photos to activate (README → "Updating an existing deployment").
 - v1 core app (ledger, reminders, invite links, PWA) — shipped 10 Aug 2026
-- Backend v3 draft (passbook tokens, photos, dormant reminder fields) — drafted, ships with Sprint 1
