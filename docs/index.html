@@ -166,17 +166,19 @@
 <dialog id="dlg-txn" class="sheet">
   <form id="form-txn" method="dialog" novalidate>
     <div id="txn-title" class="sheet-title">You gave</div>
-    <label class="field field-amt">
-      <span>Amount</span>
-      <div class="amt-input"><b id="txn-cur">₹</b><input id="txn-amount" type="text" inputmode="decimal" placeholder="0" autocomplete="off" required></div>
-    </label>
+    <div class="field-row">
+      <label class="field field-amt">
+        <span>Amount</span>
+        <div class="amt-input"><b id="txn-cur">₹</b><input id="txn-amount" type="text" inputmode="decimal" placeholder="0" autocomplete="off" required></div>
+      </label>
+      <label class="field">
+        <span>Note <em>(optional)</em></span>
+        <input id="txn-comment" type="text" placeholder="parchi, item…" autocomplete="off">
+      </label>
+    </div>
     <label class="field">
       <span>Date</span>
       <input id="txn-date" type="date" required>
-    </label>
-    <label class="field">
-      <span>Note <em>(optional)</em></span>
-      <input id="txn-comment" type="text" placeholder="e.g. slip, parchi, books…" autocomplete="off">
     </label>
     <div class="field">
       <span class="field-label">Photo <em>(bill / parchi, optional)</em></span>

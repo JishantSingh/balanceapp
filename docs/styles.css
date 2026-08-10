@@ -159,6 +159,9 @@ body {
 }
 .field-help { display: block; margin-top: 5px; font-size: 0.72rem; color: var(--text-3); }
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+/* equalize box heights when a tall field (amount) shares the row */
+.field-row .field { display: flex; flex-direction: column; }
+.field-row .field input, .field-row .field .amt-input { flex: 1; }
 .form-error { color: var(--red); font-size: 0.8rem; margin: 4px 0 10px; }
 
 .flex-spring { flex: 1; }
