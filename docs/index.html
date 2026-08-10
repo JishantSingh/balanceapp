@@ -176,16 +176,18 @@
         <input id="txn-comment" type="text" placeholder="parchi, item…" autocomplete="off">
       </label>
     </div>
-    <label class="field">
-      <span>Date</span>
-      <input id="txn-date" type="date" required>
-    </label>
-    <div class="field">
-      <span class="field-label">Photo <em>(bill / parchi, optional)</em></span>
-      <div class="photo-row">
-        <label class="btn btn-ghost photo-add">📷 <span id="txn-photo-label">Add photo</span><input id="txn-photo" type="file" accept="image/*" hidden></label>
-        <button type="button" id="txn-photo-view" class="btn btn-ghost" hidden>View</button>
-        <button type="button" id="txn-photo-remove" class="btn btn-ghost" hidden>✕</button>
+    <div class="field-row">
+      <label class="field">
+        <span>Date</span>
+        <input id="txn-date" type="date" required>
+      </label>
+      <div class="field">
+        <span class="field-label">Photo <em>(optional)</em></span>
+        <div class="photo-row">
+          <label class="btn btn-ghost photo-add">📷 <span id="txn-photo-label">Add photo</span><input id="txn-photo" type="file" accept="image/*" hidden></label>
+          <button type="button" id="txn-photo-view" class="btn btn-ghost" hidden>View</button>
+          <button type="button" id="txn-photo-remove" class="btn btn-ghost" hidden>✕</button>
+        </div>
       </div>
     </div>
     <p id="txn-error" class="form-error" hidden></p>

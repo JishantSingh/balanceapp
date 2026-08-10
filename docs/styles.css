@@ -161,7 +161,9 @@ body {
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 /* equalize box heights when a tall field (amount) shares the row */
 .field-row .field { display: flex; flex-direction: column; }
-.field-row .field input, .field-row .field .amt-input { flex: 1; }
+.field-row .field input, .field-row .field .amt-input, .field-row .field .photo-row { flex: 1; }
+/* one control height across the whole form */
+.field input, .field-amt .amt-input, .photo-row .btn { min-height: 48px; box-sizing: border-box; }
 .form-error { color: var(--red); font-size: 0.8rem; margin: 4px 0 10px; }
 
 .flex-spring { flex: 1; }
@@ -485,11 +487,11 @@ body {
   display: flex; align-items: center; gap: 6px;
   border: 1px solid var(--border-strong); border-radius: 8px;
   background: var(--surface);
-  padding: 8px 12px;
+  padding: 0 12px;
 }
 .field-amt .amt-input:focus-within { border-color: var(--blue-text); box-shadow: 0 0 0 2px var(--blue-wash); }
-.field-amt b { font-size: 1.5rem; font-weight: 500; color: var(--text-2); }
-.field-amt input { border: none !important; box-shadow: none !important; background: none; font-size: 1.8rem; font-weight: 700; padding: 2px 0; font-variant-numeric: tabular-nums; }
+.field-amt b { font-size: 1.2rem; font-weight: 500; color: var(--text-2); }
+.field-amt input { border: none !important; box-shadow: none !important; background: none; font-size: 1.4rem; font-weight: 700; padding: 0; min-height: 0; font-variant-numeric: tabular-nums; }
 
 .sheet-actions {
   display: flex; align-items: center; gap: 10px;
@@ -572,10 +574,11 @@ body {
 
 /* ---------- entry photos ---------- */
 
-.photo-row { display: flex; align-items: center; gap: 8px; }
+.photo-row { display: flex; align-items: stretch; gap: 8px; }
+.photo-row .btn { padding: 8px 12px; font-size: 0.85rem; }
 
-/* compact .btn.btn-ghost variant on the <label> wrapping the file input */
-.photo-add { padding: 8px 12px; font-size: 0.8rem; cursor: pointer; }
+/* .btn.btn-ghost variant on the <label> wrapping the file input */
+.photo-add { flex: 1; cursor: pointer; }
 
 /* photo viewer dialog */
 .sheet-photo img {

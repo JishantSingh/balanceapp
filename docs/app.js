@@ -674,7 +674,7 @@ function setPhotoUI() {
     label.textContent = 'Photo added ✓';
     view.hidden = false; remove.hidden = false;
   } else if (photoState.mode === 'existing') {
-    label.textContent = 'Change photo';
+    label.textContent = 'Change';
     view.hidden = false; remove.hidden = false;
   } else {
     label.textContent = 'Add photo';
