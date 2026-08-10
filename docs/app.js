@@ -1055,6 +1055,12 @@ function init() {
     }
   }
 
+  // Ask the browser to never evict our storage (config, cache, queue, thumbs).
+  // Chrome auto-grants this for installed PWAs — no prompt.
+  if (navigator.storage && navigator.storage.persist) {
+    navigator.storage.persist().catch(() => {});
+  }
+
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js').then((reg) => {
       reg.addEventListener('updatefound', () => {
