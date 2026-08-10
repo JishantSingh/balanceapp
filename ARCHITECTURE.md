@@ -64,6 +64,24 @@ Merchants **will** be on different backend versions — permanently. Even with a
 
 This is the same contract that lets browsers talk to decade-old web servers: versioned, additive, feature-detected. It is what we "rely on for distribution": **a merchant from a two-year-old template copy must still work with today's frontend.**
 
+### 3.5 · The frozen contract (v1–v3 surface, already deployed — invariant forever)
+
+The asymmetry is stark: **we can fix any frontend mistake tomorrow; a backend mistake is deployed into Google accounts we can't reach.** So everything below is now protocol, not code — it can be *added to*, never changed:
+
+**Transport:** GET with query params, or POST with a `text/plain` JSON body `{action, key?, …}` (no CORS preflight — invariant). Responses may arrive via 302 redirect; clients always follow. Envelope: `{ok:true, data}` | `{ok:false, error:<string>}`. **Error *text* is explicitly NOT contract** — the frontend must never parse messages (v4 adds an additive machine-readable `code` field for that).
+
+**Auth:** every action except `passbook` requires an exact `key` match. `passbook` is keyless, gated by the per-customer `token`.
+
+**Actions (semantics frozen):** `list` · `addUser` · `updateUser` · `deleteUser` · `addTxn` · `updateTxn` · `deleteTxn` · `photo` · `remindLog` · `passbook`.
+
+**Schema:** sheets named `user` and `transaction`; columns mapped by header name, never by position; the 14 existing headers are never renamed, removed, or retyped; `type` ∈ {`given`, `received`}; ids and tokens are opaque strings.
+
+**One inversion of the additive rule:** the `passbook` response is *subtractively* frozen — it returns exactly `{name, transactions:[date, type, amount, comment]}`, and **adding** a field there is a privacy change, not a compatible change. Additions to passbook output require a deliberate privacy decision, never ride along with a schema change.
+
+**Enforcement (not aspiration):** the E2E suite keeps one frozen mock backend per released version — the v3 mock is written once and never edited; v4 gets its own; the matrix is append-only. Every future frontend must pass its core specs against *every* mock in the matrix before shipping. A contract break becomes a red CI run, not a stranded merchant.
+
+**Admission test for new backend surface:** before anything enters Code.gs, it must pass "would we still be willing to serve this exact semantics in 2030?" — because we will be. If the answer is "probably we'd want to tweak it", it belongs in the frontend, or it isn't ready.
+
 ## 4 · Honest map of central dependencies
 
 "No company in the middle" is precisely true for **data and API** — those are fully the merchant's. Two soft central dependencies remain, both acceptable because they fail safe:
