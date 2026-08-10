@@ -9,7 +9,7 @@
 - **Verified working end-to-end on the real deployment:** invite links, offline write queue (chip → sync → sheet), passbook links (all 10 customers have tokens), photo attach/fetch/trash via Drive, update toast, `{passbook}` graceful fallback.
 - **Test data:** 10 customers / 22 transactions; every customer's `phone` filled with the owner's two numbers alternating (so reminder/passbook tests loop back to the owner).
 - **Engineering gotchas learned:** `DriveApp` refuses the narrow `drive.file` scope (hence Advanced Drive Service + `script.external_request` for reading bytes); trashed photos stay readable to the owner's token for ~30 days (normal Drive trash); Apps Script serves via 302 → always `fetch`/`curl -L`; POST as `text/plain` to avoid CORS preflight.
-- **Sprint 2 candidates (not yet committed):** UPI ID in reminders (backlog #2) and per-customer statement (#3) — both small, collection-critical.
+- **Sprint 2 candidates (not yet committed):** see [UX-AUDIT.md](UX-AUDIT.md) (11 Aug 2026, three-agent workflow audit) — recommended: Sprint 2 "Nothing lies, nothing lost" (correctness bugs + money-safety rails), then collection round, then entry economics, then onboarding. UPI ID in reminders (backlog #2) and per-customer statement (#3) fold into those. Batch all backend-touching items into one Code.gs v4 release.
 - **Parked with decisions recorded:** scheduled reminders (#1), config sheet tab (#12).
 - Product decisions + research live in [FEATURES.md](FEATURES.md); artifacts: feature plan `claude.ai/code/artifact/7a53ebbc-…`, research memo `…/2ee5a4f8-…`, this doc `…/398d125b-…`.
 
