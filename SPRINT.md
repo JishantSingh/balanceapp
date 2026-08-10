@@ -4,7 +4,7 @@
 
 ## Current state — as of 10 Aug 2026 (read this first on resume)
 
-- **Live app:** https://jishantsingh.github.io/balanceapp/ — GitHub Pages from `main:/docs` of the public repo `JishantSingh/balanceapp`. Shell cache `bahi-shell-v4`; bump it in `docs/sw.js` on any shell change (users then get the tap-to-update toast).
+- **Live app:** https://jishantsingh.github.io/balanceapp/ — GitHub Pages from `main:/docs` of the public repo `JishantSingh/balanceapp`. Shell cache `bahi-shell-v5`; bump it in `docs/sw.js` on any shell change (users then get the tap-to-update toast).
 - **Live backend:** Apps Script **v3 + Advanced Drive Service photos** deployed on the **"Ledger (Bahi test)"** spreadsheet (a copy — the original "Ledger" sheet is untouched). Same `/exec` deployment since day one; updates go via Manage deployments → ✏️ → New version. Owner has granted all three narrow scopes.
 - **Verified working end-to-end on the real deployment:** invite links, offline write queue (chip → sync → sheet), passbook links (all 10 customers have tokens), photo attach/fetch/trash via Drive, update toast, `{passbook}` graceful fallback.
 - **Test data:** 10 customers / 22 transactions; every customer's `phone` filled with the owner's two numbers alternating (so reminder/passbook tests loop back to the owner).
@@ -47,6 +47,7 @@ Out of scope for Sprint 1: everything below.
 
 ## Done
 
+- **Standardized UI reskin — shipped 11 Aug 2026.** Dropped the paper-ink theme for the Khatabook/OkCredit-standard look (owner's call after seeing competitor screenshots): system font stack (Google Fonts removed entirely), white surfaces, solid blue `#1565C0` app bar, red/green strictly reserved for money. Customer rows gained initial avatars (8-color muted palette), relative-time subtext ("N din pehle"), and MILENGE/DENGE balance captions. Layout/behavior untouched — buttons, screens, and flows are frozen per design principles. The red bahi-book app icon stays (it's the real object). Verified in light + dark on demo mode.
 - **Update-ready toast — shipped 10 Aug 2026.** New app versions self-announce ("Naya version aa gaya — tap karein ⟳"); tap reloads into the new version; re-checks on every app foreground. Toast centering fixed.
 - **Sprint 1 — shipped 10 Aug 2026.** All five items live: Given/Received buttons, passbook links, photos, offline write queue, docs. Verified: real-backend queue round-trip (offline entry → pending chip → synced to sheet → deleted), demo photo round-trip (compress → save → 📎 → view), passbook page render, graceful `{passbook}` fallback on pre-v3 backends. Merchant redeploy of Code.gs v3 + manifest required for tokens/photos to activate (README → "Updating an existing deployment").
 - v1 core app (ledger, reminders, invite links, PWA) — shipped 10 Aug 2026
