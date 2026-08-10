@@ -13,7 +13,32 @@
 - **Parked with decisions recorded:** scheduled reminders (#1), config sheet tab (#12).
 - Product decisions + research live in [FEATURES.md](FEATURES.md); artifacts: feature plan `claude.ai/code/artifact/7a53ebbc-…`, research memo `…/2ee5a4f8-…`, this doc `…/398d125b-…`.
 
-## Sprint 1 — "Passbook & Photos" (current)
+## Sprint 2 — "Nothing lies, nothing lost" (planned 11 Aug 2026, awaiting go)
+
+Fix every Tier 0 + Tier 1 finding from [UX-AUDIT.md](UX-AUDIT.md), with an E2E test harness built FIRST so the fixes land against red tests and the offline queue can't silently regress.
+
+### Phase 0 — E2E test harness (prerequisite)
+
+- **Stack:** Playwright (`@playwright/test`, chromium only) as a devDependency; static server over `docs/`; a ~100-line Node **mock Apps Script backend** (`tests/mock-backend.mjs`) emulating `/exec` — list/addUser/addTxn/updateTxn/deleteTxn/photo/passbook, plus switchable failure modes (`ok:false` bad-key, HTML sign-in page, network drop). Demo mode bypasses the queue, so the mock backend is what makes queue/error paths testable.
+- **~15 specs covering the essential workflows.** Several are written to CURRENT-CORRECT behavior (entry loop, offline queue round-trip, passbook fields, photo attach); the rest encode the Tier-0 bugs and **fail red on today's build by design**: bad-key invite must not say "Connected ✓"; ledger switch must wipe cache/queue; rejected write must surface + roll back; armConfirm must not fire cross-entity; no-match search must show a next action; new customer must sort first; toast must be visible over an open dialog.
+- **Run:** `npm test` locally. Optional GitHub Actions workflow on push (free on public repos) — included unless vetoed.
+- PWA/service-worker and localStorage-quota cases stay manual (noted in the spec file).
+
+### Phase 1 — three work packages (Opus implements, Fable specs+verifies, tests must be green + manual browser pass before each ship)
+
+| WP | Contents (audit refs) | Size |
+|----|----------------------|------|
+| **A — Queue truth** | Failed-writes surface w/ local rollback + persistent red chip (0.1) · cache-save quota guard (0.5) · split auth/URL errors from "OFFLINE" (0.6) | M |
+| **B — Destructive-action safety** | armConfirm entity tokens + clear-on-open + fixed-width color armed state (0.2) · toast/busy top-layer rescue (0.4) · durable update toast (0.7) · undo entry delete (1.2) · photo-remove into viewer w/ confirm (1.2) · direction toggle when editing + colored save readback (1.3) | M |
+| **C — Links & hygiene** | Invite validation before "Connected ✓" + switch confirm + cache/queue/demo wipe + no demo-field inheritance (0.3) · created-at tiebreak (0.8) · thumbs in disconnect wipe (0.9) · passbook-link copy button + invite relabel/danger/confirm (1.1) · note-privacy help line (1.4) · phone validation (1.5) | M |
+
+Ship order A → B → C (A unblocks B's undo semantics; C's tests depend on the mock backend from Phase 0). One sw cache bump per WP ship. **No backend changes in this sprint** — everything is frontend; backend-touching audit items wait for the batched Code.gs v4.
+
+### Done criteria
+
+All Phase-0 red tests green · no previously-green test broken · manual pass on the real test deployment (invite link, offline entry round-trip, photo view) · SPRINT.md + memory updated.
+
+## Sprint 1 — "Passbook & Photos" (shipped)
 
 Goal: ship the test user's approved requests, minus reminders (parked → backlog #1).
 
