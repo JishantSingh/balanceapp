@@ -29,7 +29,8 @@ Out of scope for Sprint 1: everything below.
 9. **Supplier framing** — customer/supplier toggle.
 10. **Template-sheet onboarding** — "Make a copy" sheet + Hinglish setup video for the helper persona.
 11. **Collection promise dates** — "will pay by" feeding the (future) due queue.
-12. *Later tier (demand-gated):* voice entry with keypad confirm · cashbook module · staff keys with limited scope · multiple-book switcher.
+12. **Config sheet tab** *(parked 10 Aug 2026, user idea)* — a `config` tab in the spreadsheet holding merchant name, reminder template, currency, country code; app reads it on sync so settings follow the ledger across devices instead of living in per-device storage.
+13. *Later tier (demand-gated):* voice entry with keypad confirm · cashbook module · staff keys with limited scope · multiple-book switcher.
 
 *Moved into Sprint 1: offline write queue (10 Aug 2026).*
 
