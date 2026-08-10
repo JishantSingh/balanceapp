@@ -10,6 +10,10 @@
  * Setup:
  *  1. Open your Ledger spreadsheet → Extensions → Apps Script.
  *  2. Paste this whole file into Code.gs and save.
+ *     Then: Project Settings (gear icon) → tick "Show appsscript.json manifest
+ *     file in editor" → paste appsscript.json from this repo over it. This
+ *     limits the script's permission to THIS spreadsheet only, instead of the
+ *     default "all your spreadsheets" prompt.
  *  3. Change API_KEY below to your own long random string.
  *  4. Deploy → New deployment → type "Web app":
  *       - Execute as: Me
