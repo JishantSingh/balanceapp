@@ -39,7 +39,7 @@ Either use an existing Ledger sheet, or create a blank Google Sheet — the scri
 
 1. In the sheet: **Extensions → Apps Script**
 2. Paste all of [`apps-script/Code.gs`](apps-script/Code.gs) into `Code.gs`, replacing what's there
-3. **Project Settings (gear) → tick "Show `appsscript.json` manifest file in editor"**, then paste [`apps-script/appsscript.json`](apps-script/appsscript.json) over it — this narrows the permission prompt to **two scopes only**: the spreadsheet the script is bound to, plus *files created by this app* in Drive (the "Bahi Photos" folder). The script still cannot see any of your other spreadsheets or any Drive file it didn't create.
+3. **Project Settings (gear) → tick "Show `appsscript.json` manifest file in editor"**, then paste [`apps-script/appsscript.json`](apps-script/appsscript.json) over it — this narrows the permission prompt to **three scopes only**: the spreadsheet the script is bound to, *files created by this app* in Drive (the "Bahi Photos" folder), and *connect to an external service* (the script reading photo bytes back via Google's own Drive API — no non-Google service is ever contacted). The script still cannot see any of your other spreadsheets or any Drive file it didn't create. The manifest also enables the Advanced Drive service, which the photo feature requires (plain `DriveApp` refuses to work under the narrow scope).
 4. Change `API_KEY` at the top of `Code.gs` to a long random string (this is the merchant's password)
 5. **Deploy → New deployment → Web app**, with:
    - *Execute as:* **Me**
