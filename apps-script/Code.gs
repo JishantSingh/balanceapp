@@ -376,35 +376,47 @@ function deleteTxn(id) {
 }
 
 // ---------- photos (merchant's own Drive, private) ----------
+// Uses the Advanced Drive Service (v3) rather than DriveApp: DriveApp demands
+// the full-Drive scope, while the advanced service honors the narrow
+// drive.file scope ("files created by this app" only).
 
 function photoFolder() {
   const props = PropertiesService.getScriptProperties();
   const saved = props.getProperty('photoFolderId');
   if (saved) {
     try {
-      return DriveApp.getFolderById(saved);
+      const f = Drive.Files.get(saved, { fields: 'id,trashed' });
+      if (!f.trashed) return saved;
     } catch (e) { /* folder was deleted — recreate */ }
   }
-  const folder = DriveApp.createFolder(PHOTO_FOLDER);
-  props.setProperty('photoFolderId', folder.getId());
-  return folder;
+  const folder = Drive.Files.create({
+    name: PHOTO_FOLDER,
+    mimeType: 'application/vnd.google-apps.folder',
+  });
+  props.setProperty('photoFolderId', folder.id);
+  return folder.id;
 }
 
 function savePhoto(b64) {
   if (b64.length > MAX_PHOTO_B64) throw new Error('Photo too large — try again, it will be compressed more');
   const blob = Utilities.newBlob(Utilities.base64Decode(b64), 'image/jpeg', 'bahi-' + shortId() + '.jpg');
-  const file = photoFolder().createFile(blob);
-  return file.getId();
+  const file = Drive.Files.create({ name: blob.getName(), parents: [photoFolder()] }, blob);
+  return file.id;
 }
 
 function getPhoto(fileId) {
   if (!fileId) throw new Error('Missing photo id');
-  const blob = DriveApp.getFileById(String(fileId)).getBlob();
-  return { b64: Utilities.base64Encode(blob.getBytes()), mime: blob.getContentType() };
+  const res = UrlFetchApp.fetch(
+    'https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(String(fileId)) + '?alt=media',
+    { headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true }
+  );
+  if (res.getResponseCode() !== 200) throw new Error('Photo not found');
+  const blob = res.getBlob();
+  return { b64: Utilities.base64Encode(blob.getBytes()), mime: blob.getContentType() || 'image/jpeg' };
 }
 
 function trashPhoto(fileId) {
   try {
-    DriveApp.getFileById(fileId).setTrashed(true);
+    Drive.Files.update({ trashed: true }, String(fileId));
   } catch (e) { /* already gone — ignore */ }
 }
