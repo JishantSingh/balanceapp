@@ -2,6 +2,39 @@
 
 *11 Aug 2026. The load-bearing document: how code divides between frontend and backend, why, and how that division survives distribution to merchants we never meet.*
 
+## 0 · The picture
+
+```mermaid
+flowchart LR
+  subgraph US["Us — static files only · no data · nothing at runtime"]
+    PAGES["GitHub Pages<br/>ONE shared frontend (PWA)"]
+    REPO["GitHub repo<br/>Code.gs + release.json"]
+  end
+
+  subgraph MPHONE["Merchant's phone"]
+    PWA["Bahi PWA<br/>all product logic · offline queue<br/>localStorage: /exec URL + API key"]
+  end
+
+  subgraph GOOG["Merchant's Google account"]
+    EXEC["Apps Script web app /exec<br/>auth · CRUD · photos · passbook"]
+    SHEET[("Google Sheet<br/>the ledger")]
+    DRIVE[("Drive<br/>bill photos")]
+    TRIG["daily trigger<br/>self-updater"]
+  end
+
+  CPHONE["Customer's phone<br/>read-only passbook (#p= token)"]
+
+  PAGES -- "static app · update toast" --> PWA
+  PWA -- "JSON + API key" --> EXEC
+  EXEC --> SHEET
+  EXEC --> DRIVE
+  CPHONE -- "customer token only" --> EXEC
+  REPO -. "release manifest,<br/>SHA-256-verified files" .-> TRIG
+  TRIG -. "Apps Script API: rewrite own code,<br/>repoint the SAME /exec deployment" .-> EXEC
+```
+
+Solid arrows are the runtime data path — note that none of them touch us. Dotted arrows are the two update channels: frontend via Pages (evergreen), backend via the self-updater (pull-based, verify-then-apply).
+
 ## 1 · The non-negotiable, and what it forces
 
 **The merchant owns their data and their backend.** The database is their Google Sheet; the API is their Apps Script deployment, running as them, in their account, under their key. Jishant is not a service provider; there is no server of ours in the data path, ever.
@@ -108,6 +141,7 @@ There is deliberately **no runtime** central dependency: nothing a merchant does
 1. The script calls the Apps Script API **on itself** via `UrlFetchApp` + `ScriptApp.getOAuthToken()`: `projects.updateContent` (new code → HEAD), then `projects.versions.create` + `projects.deployments.update` pointing the **existing** deployment at the new version — the `/exec` URL (and every invite/passbook link) survives. Updating-not-recreating the deployment is exactly the documented pattern for keeping a web app's URL.
 2. A **time-driven trigger** (installed programmatically, daily) checks a version manifest in our public repo; when a newer release exists, it fetches the pinned files and applies steps 1. No taps, no visits — updates land like the frontend's do. The FE's "Update backend" button remains as a manual "check now".
 3. Rollback: Apps Script keeps every version; Manage deployments → previous version is one click, and the updater can auto-revert if a post-update self-test (`list` against itself) fails.
+4. **Per-merchant state never lives in code.** Auto-update overwrites Code.gs wholesale, so anything merchant-specific — the API key, the photo folder id — lives in Script Properties, which updates can't touch. (v4 moved the API key there; the old constant remains only as a one-time migration shim.) Corollary: rotation is now a property edit, not a code edit.
 
 *One-time setup cost (at install, not per update):* three extra OAuth scopes — `script.projects`, `script.deployments`, `script.scriptapp` (triggers) — plus flipping the **"Google Apps Script API" toggle** at script.google.com/home/usersettings (Google requires it before the API will touch the user's scripts; without it, calls 403). These land in the same consent screen the merchant already sees at setup.
 

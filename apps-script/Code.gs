@@ -1,5 +1,5 @@
 /**
- * Bahi — Google Sheets backend API (Khatabook-style udhaar ledger) · v3
+ * Bahi — Google Sheets backend API (Khatabook-style udhaar ledger) · v4
  *
  * Sheets (columns are created/added automatically):
  *   "user":        user_id | name | created_at | phone | cohort | last_reminded | token
@@ -16,13 +16,42 @@
  * Setup:
  *  1. Spreadsheet → Extensions → Apps Script; paste this file into Code.gs.
  *  2. Project Settings (gear) → show appsscript.json → paste the manifest from
- *     this repo (scopes: this spreadsheet + files created by this app).
- *  3. Set API_KEY below to a long random string.
- *  4. Deploy → New deployment → Web app (Execute as: Me, Access: Anyone).
- *     Updating later: Deploy → Manage deployments → Edit → New version.
+ *     this repo (scopes: this spreadsheet + files created by this app + the
+ *     Apps Script API, which the self-updater uses to update this script).
+ *  3. Enable the Apps Script API for your account (one-time):
+ *     script.google.com/home/usersettings → "Google Apps Script API" → On.
+ *  4. In the editor, run the function `setup` once and grant access — the
+ *     log prints your API key. (Upgrading from v3? Your existing API_KEY
+ *     constant is adopted automatically; you can leave it in place.)
+ *  5. Deploy → New deployment → Web app (Execute as: Me, Access: Anyone).
+ *     After this, the script keeps ITSELF up to date (daily check against
+ *     the public repo) — no more manual pasting for normal releases.
+ *     Releases that need new permissions can't auto-apply (by design) and
+ *     will wait for you.
  */
 
+// Legacy shim (pre-v4 installs set the key here). The real key lives in
+// Script Properties so that auto-updates — which overwrite this file —
+// can never clobber it. Rotation: edit the `apiKey` Script Property.
 const API_KEY = 'change-me-to-a-long-random-string';
+
+function apiKey_() {
+  const props = PropertiesService.getScriptProperties();
+  let k = props.getProperty('apiKey');
+  if (!k) {
+    k = (API_KEY && API_KEY !== 'change-me-to-a-long-random-string')
+      ? API_KEY
+      : Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
+    props.setProperty('apiKey', k);
+  }
+  return k;
+}
+
+// Backend version + where released code is published. The self-updater
+// refuses anything whose hashes don't match the release manifest.
+const BAHI_VERSION = 4;
+const RELEASE_BASE = 'https://raw.githubusercontent.com/JishantSingh/balanceapp/main/apps-script/';
+const RELEASE_MANIFEST = RELEASE_BASE + 'release.json';
 
 const USER_SHEET = 'user';
 const USER_HEADERS = ['user_id', 'name', 'created_at', 'phone', 'cohort', 'last_reminded', 'token'];
@@ -56,7 +85,7 @@ function handle(req) {
     }
   }
 
-  if (req.key !== API_KEY) {
+  if (req.key !== apiKey_()) {
     return respond({ ok: false, error: 'Unauthorized: bad or missing key' });
   }
   try {
@@ -79,6 +108,8 @@ function handle(req) {
         return respond({ ok: true, data: getPhoto(req.id) });
       case 'remindLog':
         return respond({ ok: true, data: withLock(remindLog, req.id) });
+      case 'update':
+        return respond({ ok: true, data: checkForUpdate() });
       default:
         return respond({ ok: false, error: 'Unknown action: ' + req.action });
     }
@@ -163,7 +194,7 @@ function listAll() {
   const txns = listRows(txnSheet(), TXN_HEADERS);
   users.forEach(function (u) { delete u._row; });
   txns.forEach(function (t) { delete t._row; });
-  return { users: users, transactions: txns };
+  return { users: users, transactions: txns, v: BAHI_VERSION };
 }
 
 // Every customer gets a token so passbook links can be built.
@@ -419,4 +450,137 @@ function trashPhoto(fileId) {
   try {
     Drive.Files.update({ trashed: true }, String(fileId));
   } catch (e) { /* already gone — ignore */ }
+}
+
+// ---------- self-updater ----------
+// The script updates ITSELF: a daily trigger fetches the release manifest
+// from the public repo, verifies every file's SHA-256 against it, rewrites
+// this project via the Apps Script API, and repoints the existing web-app
+// deployment at the new version — the /exec URL (and every link built on
+// it) never changes. Two safety rules:
+//   · files that don't hash-match the manifest are never applied;
+//   · a release whose manifest asks for NEW OAuth scopes is never applied
+//     silently — it waits for the owner (updates can't grow their own
+//     permissions).
+
+/** Run me once from the editor after pasting: authorizes everything,
+ *  adopts/mints the API key, and installs the daily update check. */
+function setup() {
+  userSheet();
+  txnSheet();
+  photoFolder();
+  ensureUpdateTrigger();
+  const msg = 'Bahi v' + BAHI_VERSION + ' ready — auto-update is on. API key: ' + apiKey_();
+  console.log(msg);
+  return msg;
+}
+
+function ensureUpdateTrigger() {
+  const exists = ScriptApp.getProjectTriggers().some(function (t) {
+    return t.getHandlerFunction() === 'checkForUpdate';
+  });
+  if (!exists) {
+    ScriptApp.newTrigger('checkForUpdate').timeBased().everyDays(1).create();
+  }
+}
+
+function checkForUpdate() {
+  const props = PropertiesService.getScriptProperties();
+  try {
+    const result = applyUpdate_();
+    props.setProperty('lastUpdateCheck', new Date().toISOString() + ' · ' + result.status);
+    return result;
+  } catch (err) {
+    // Never let the daily trigger die loudly; record and report instead.
+    props.setProperty('lastUpdateError', new Date().toISOString() + ' · ' + String(err));
+    return { status: 'error', error: String(err), current: BAHI_VERSION };
+  }
+}
+
+function applyUpdate_() {
+  const bust = '?t=' + Date.now(); // raw.githubusercontent CDN cache-buster
+  const manifest = JSON.parse(UrlFetchApp.fetch(RELEASE_MANIFEST + bust).getContentText());
+  if (!(Number(manifest.version) > BAHI_VERSION)) {
+    return { status: 'up-to-date', current: BAHI_VERSION };
+  }
+
+  // Fetch + hash-verify every released file.
+  const incoming = manifest.files.map(function (f) {
+    const source = UrlFetchApp.fetch(RELEASE_BASE + f.path + bust).getContentText();
+    if (sha256Hex_(source) !== f.sha256) {
+      throw new Error('Hash mismatch for ' + f.name + ' — refusing to update');
+    }
+    return { name: f.name, type: f.type, source: source };
+  });
+
+  // Scope guard: silently applying a permission change is forbidden.
+  const current = scriptApi_('get', '/content');
+  const curManifest = current.files.filter(function (f) { return f.name === 'appsscript'; })[0];
+  const newManifest = incoming.filter(function (f) { return f.name === 'appsscript'; })[0];
+  if (curManifest && newManifest) {
+    const curScopes = (JSON.parse(curManifest.source).oauthScopes || []);
+    const newScopes = (JSON.parse(newManifest.source).oauthScopes || []);
+    const added = newScopes.filter(function (s) { return curScopes.indexOf(s) === -1; });
+    if (added.length) {
+      return {
+        status: 'needs-manual-update', current: BAHI_VERSION,
+        available: manifest.version, reason: 'new permissions required: ' + added.join(', '),
+      };
+    }
+  }
+
+  // Upsert released files into the project, preserving any extra files.
+  const files = current.files.map(function (f) {
+    const repl = incoming.filter(function (n) { return n.name === f.name; })[0];
+    return repl || { name: f.name, type: f.type, source: f.source };
+  });
+  incoming.forEach(function (n) {
+    if (!files.some(function (f) { return f.name === n.name; })) files.push(n);
+  });
+  scriptApi_('put', '/content', { files: files });
+
+  // New immutable version, then repoint every versioned web-app deployment
+  // at it — same deploymentId, same /exec URL.
+  const version = scriptApi_('post', '/versions', { description: 'Bahi v' + manifest.version + ' (auto-update)' });
+  const deployments = scriptApi_('get', '/deployments').deployments || [];
+  let updated = 0;
+  deployments.forEach(function (d) {
+    const isWebApp = (d.entryPoints || []).some(function (e) { return e.entryPointType === 'WEB_APP'; });
+    const isVersioned = d.deploymentConfig && d.deploymentConfig.versionNumber;
+    if (isWebApp && isVersioned) {
+      scriptApi_('put', '/deployments/' + d.deploymentId, {
+        deploymentConfig: {
+          scriptId: ScriptApp.getScriptId(),
+          versionNumber: version.versionNumber,
+          manifestFileName: 'appsscript',
+          description: 'Bahi v' + manifest.version,
+        },
+      });
+      updated++;
+    }
+  });
+
+  return { status: 'updated', from: BAHI_VERSION, to: manifest.version, deploymentsUpdated: updated };
+}
+
+function scriptApi_(method, path, payload) {
+  const res = UrlFetchApp.fetch('https://script.googleapis.com/v1/projects/' + ScriptApp.getScriptId() + path, {
+    method: method,
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    contentType: 'application/json',
+    payload: payload ? JSON.stringify(payload) : undefined,
+    muteHttpExceptions: true,
+  });
+  const code = res.getResponseCode();
+  if (code < 200 || code >= 300) {
+    throw new Error('Apps Script API ' + method.toUpperCase() + ' ' + path + ' failed (' + code + '): ' +
+      res.getContentText().slice(0, 300));
+  }
+  return JSON.parse(res.getContentText() || '{}');
+}
+
+function sha256Hex_(text) {
+  return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, text, Utilities.Charset.UTF_8)
+    .map(function (b) { return ((b & 0xFF) + 0x100).toString(16).slice(1); })
+    .join('');
 }

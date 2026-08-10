@@ -1,0 +1,18 @@
+{
+  "version": 4,
+  "released": "2026-08-10",
+  "files": [
+    {
+      "name": "Code",
+      "type": "SERVER_JS",
+      "path": "Code.gs",
+      "sha256": "c56e0aa22b9f60d891646aed9c80813d757ccb92d576a36081c6f170517114fe"
+    },
+    {
+      "name": "appsscript",
+      "type": "JSON",
+      "path": "appsscript.json",
+      "sha256": "6bacf752d1eb0e9ed0ac207671604eefc4c718492b97f1e3dcf2439aea5beb69"
+    }
+  ]
+}
