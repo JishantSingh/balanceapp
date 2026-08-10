@@ -113,6 +113,18 @@ function fmtDate(str) {
   return `${String(d.getDate()).padStart(2, '0')} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
 }
 
+// "aaj" · "kal" · "N din pehle" · "DD MMM" once it is older than 30 days
+function relDate(str) {
+  const d = parseDate(str);
+  if (d.getTime() === 0) return '';
+  const midnight = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((midnight(new Date()) - midnight(d)) / 86400000);
+  if (days <= 0) return 'aaj';
+  if (days === 1) return 'kal';
+  if (days <= 30) return days + ' din pehle';
+  return `${String(d.getDate()).padStart(2, '0')} ${MONTHS[d.getMonth()]}`;
+}
+
 function todayISO() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -411,17 +423,16 @@ function renderHome() {
 
   $('customer-list').innerHTML = filtered.map((it, i) => {
     const tag = it.bal > 0 ? 'due' : it.bal < 0 ? 'adv' : '';
-    const word = it.bal > 0 ? 'due' : it.bal < 0 ? 'advance' : 'settled';
-    const sub = it.txns.length
-      ? `${it.txns.length} entr${it.txns.length === 1 ? 'y' : 'ies'} · last ${fmtDate(it.txns[0].date)}`
-      : 'no entries yet';
+    // red = they owe you (milenge) · green = you owe them (denge)
+    const caption = it.bal > 0 ? 'milenge' : it.bal < 0 ? 'denge' : '';
+    const when = it.txns.length ? relDate(it.txns[0].date) : '';
     return `<li class="customer-row" data-id="${escapeHtml(it.u.user_id)}" style="animation-delay:${Math.min(i * 40, 400)}ms">
       <span class="avatar t${avatarTone(it.u.name)}">${escapeHtml(initialOf(it.u.name))}</span>
       <span class="customer-main">
         <span class="customer-name">${escapeHtml(it.u.name)}</span>
-        <div class="customer-sub">${escapeHtml(sub)}</div>
+        ${when ? `<div class="customer-sub">${escapeHtml(when)}</div>` : ''}
       </span>
-      <span class="customer-amt ${tag}"><b>${money(it.bal)}</b><small>${word}</small></span>
+      <span class="customer-amt ${tag}"><b>${money(it.bal)}</b>${caption ? `<small>${caption}</small>` : ''}</span>
     </li>`;
   }).join('');
 
@@ -432,10 +443,11 @@ function renderHome() {
 function initialOf(name) {
   return (String(name).trim()[0] || '?').toUpperCase();
 }
+// deterministic avatar colour: name -> one of 8 muted palette slots (.avatar.t0…t7)
 function avatarTone(name) {
   let h = 0;
   for (const c of String(name)) h = (h * 31 + c.charCodeAt(0)) >>> 0;
-  return h % 3;
+  return h % 8;
 }
 
 // ---------------------------------------------------------------- render: customer

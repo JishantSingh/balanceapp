@@ -1,7 +1,7 @@
 /* Bahi service worker — caches the app shell so the app opens instantly
    and works offline (data itself is cached by app.js in localStorage). */
 
-const CACHE = 'bahi-shell-v4';
+const CACHE = 'bahi-shell-v5';
 const SHELL = [
   './',
   './index.html',
@@ -30,18 +30,6 @@ self.addEventListener('fetch', (e) => {
 
   // Never intercept the Apps Script API
   if (url.hostname.endsWith('script.google.com') || url.hostname.endsWith('googleusercontent.com')) return;
-
-  // Google Fonts: cache-first (fonts are immutable)
-  if (url.hostname === 'fonts.googleapis.com' || url.hostname === 'fonts.gstatic.com') {
-    e.respondWith(
-      caches.open('bahi-fonts-v1').then((c) =>
-        c.match(e.request).then((hit) =>
-          hit || fetch(e.request).then((res) => { c.put(e.request, res.clone()); return res; })
-        )
-      )
-    );
-    return;
-  }
 
   // App shell: cache-first, refresh in background
   if (e.request.method === 'GET' && url.origin === location.origin) {
