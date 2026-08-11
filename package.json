@@ -1,0 +1,13 @@
+{
+  "name": "balanceapp-tests",
+  "private": true,
+  "description": "E2E test harness for Bahi. The app itself is dependency-free static files in docs/.",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.45.0"
+  }
+}
