@@ -2,16 +2,15 @@
 
 *Working doc for dev runs. Feature rationale and research live in [FEATURES.md](FEATURES.md).*
 
-## Current state — as of 10 Aug 2026 (read this first on resume)
+## Current state — as of 12 Aug 2026 (read this first on resume)
 
-- **Live app:** https://jishantsingh.github.io/balanceapp/ — GitHub Pages from `main:/docs` of the public repo `JishantSingh/balanceapp`. Shell cache `bahi-shell-v5`; bump it in `docs/sw.js` on any shell change (users then get the tap-to-update toast).
-- **Live backend:** Apps Script **v3 + Advanced Drive Service photos** deployed on the **"Ledger (Bahi test)"** spreadsheet (a copy — the original "Ledger" sheet is untouched). Same `/exec` deployment since day one; updates go via Manage deployments → ✏️ → New version. Owner has granted all three narrow scopes.
-- **Verified working end-to-end on the real deployment:** invite links, offline write queue (chip → sync → sheet), passbook links (all 10 customers have tokens), photo attach/fetch/trash via Drive, update toast, `{passbook}` graceful fallback.
-- **Test data:** 10 customers / 22 transactions; every customer's `phone` filled with the owner's two numbers alternating (so reminder/passbook tests loop back to the owner).
-- **Engineering gotchas learned:** `DriveApp` refuses the narrow `drive.file` scope (hence Advanced Drive Service + `script.external_request` for reading bytes); trashed photos stay readable to the owner's token for ~30 days (normal Drive trash); Apps Script serves via 302 → always `fetch`/`curl -L`; POST as `text/plain` to avoid CORS preflight.
-- **Sprint 2 candidates (not yet committed):** see [UX-AUDIT.md](UX-AUDIT.md) (11 Aug 2026, three-agent workflow audit) — recommended: Sprint 2 "Nothing lies, nothing lost" (correctness bugs + money-safety rails), then collection round, then entry economics, then onboarding. UPI ID in reminders (backlog #2) and per-customer statement (#3) fold into those. Batch all backend-touching items into one Code.gs v4 release.
+- **Live app:** https://jishantsingh.github.io/balanceapp/ — GitHub Pages from `main:/docs` of `JishantSingh/balanceapp`. Shell cache `bahi-shell-v19`; bump on any shell change (users get the persistent update bar).
+- **Live backend:** Apps Script **v8** on the "Ledger (Bahi test)" spreadsheet (original "Ledger" untouched). Releases ship via the **self-updater**: edit apps-script/ → bump BAHI_VERSION → `node apps-script/make-release.mjs` → push → POST `{action:'update', key}` (or the daily trigger). v7 = PIN Suraksha + token revoke + sheetUrl; v8 = idempotent writes (cid dedup, already:true deletes).
+- **Tests:** 78 Playwright specs (`npm test`, CI on push) against an in-process mock of the backend contract; every bug fix lands mutation-verified.
+- **Shipped:** v1 core → Sprint 1 (passbook/photos/queue) → standardized UI → Sprint 2 (all UX-AUDIT Tier 0+1 + hardening) → photo perf/persistence → Sprint 3 (PIN Suraksha) → idempotent queue writes. See sprint sections + Done log below.
+- **Next queued:** Reliability audit (section below). Then Tier 2 collection round per UX-AUDIT.md.
 - **Parked with decisions recorded:** scheduled reminders (#1), config sheet tab (#12).
-- Product decisions + research live in [FEATURES.md](FEATURES.md); artifacts: feature plan `claude.ai/code/artifact/7a53ebbc-…`, research memo `…/2ee5a4f8-…`, this doc `…/398d125b-…`.
+- Product decisions + research: [FEATURES.md](FEATURES.md) · findings: [UX-AUDIT.md](UX-AUDIT.md) · architecture/release rules: [ARCHITECTURE.md](ARCHITECTURE.md) · merchant setup: [SETUP.md](SETUP.md).
 
 ## Sprint 2 — "Nothing lies, nothing lost" (SHIPPED 11-12 Aug 2026)
 
