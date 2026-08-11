@@ -29,7 +29,6 @@ test('a server-rejected write must surface visibly, not vanish', async ({ page }
   // ledger keeps showing the phantom entry, and the next sync erases it
   // silently. Fixed behavior: a persistent failed-writes surface
   // (#chip-failed) and the optimistic entry rolled back or visibly marked.
-  test.fail(true, 'audit 0.1: rejected writes are dropped silently');
   const backend = createBackend(seedLedger());
   await openLedger(page, backend);
   await openCustomer(page, 'Ramu Halwai');

@@ -586,6 +586,33 @@ body {
   cursor: pointer;
 }
 
+/* ---------- failed writes (rejected by the server) + bad key ---------- */
+
+/* the one place red is allowed outside money: a write the sheet refused */
+.chip-failed {
+  appearance: none;
+  -webkit-appearance: none;
+  font-family: var(--sans);
+  line-height: inherit;
+  color: #fff;
+  border-color: #fff;
+  background: var(--red-fill);
+  cursor: pointer;
+}
+
+.failed-help { font-size: 0.85rem; color: var(--text-2); margin-bottom: 12px; }
+
+.failed-list { list-style: none; }
+.failed-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.failed-main { flex: 1; min-width: 0; }
+.failed-label { font-size: 0.95rem; font-weight: 600; }
+.failed-why { font-size: 0.75rem; color: var(--text-2); margin-top: 2px; }
+.failed-row .btn { padding: 8px 12px; font-size: 0.8rem; white-space: nowrap; }
+
 /* ---------- entry photos ---------- */
 
 .photo-row { display: flex; align-items: stretch; gap: 8px; }

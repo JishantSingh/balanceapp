@@ -4,7 +4,9 @@
 
    Write path: every write is applied to the local cache immediately, then
    queued. The queue replays in order; network failures keep items queued
-   (visible as the "pending" chip) — entries never silently fail. */
+   (visible as the "pending" chip) — entries never silently fail. A write the
+   server *refuses* is rolled back locally and parked in the failed list
+   (the red chip) so the ledger never shows an entry the sheet doesn't have. */
 
 'use strict';
 
@@ -14,6 +16,7 @@ const LS_CONFIG = 'bahi.config';
 const LS_CACHE = 'bahi.cache';
 const LS_DEMO = 'bahi.demo';
 const LS_QUEUE = 'bahi.queue';
+const LS_FAILED = 'bahi.failed';
 
 const DEFAULT_TEMPLATE =
   'Namaste {name} ji 🙏\n' +
@@ -25,6 +28,8 @@ const DEFAULT_TEMPLATE =
 let config = loadJSON(LS_CONFIG) || null;
 let db = loadJSON(LS_CACHE) || { users: [], transactions: [] };
 let queue = loadJSON(LS_QUEUE) || [];
+let failed = loadJSON(LS_FAILED) || [];   // writes the server refused (rolled back locally)
+let authBad = false;                      // last list call failed on the key
 let currentCustomerId = null;
 let editingTxnId = null;
 let editingCustomerId = null;
@@ -45,6 +50,7 @@ function loadJSON(key) {
   try { return JSON.parse(localStorage.getItem(key)); } catch (e) { return null; }
 }
 function saveJSON(key, value) { localStorage.setItem(key, JSON.stringify(value)); }
+function clone(v) { return v == null ? v : JSON.parse(JSON.stringify(v)); }
 
 // ---------------------------------------------------------------- dom
 
@@ -148,20 +154,42 @@ function money(n) {
 
 // ---------------------------------------------------------------- api
 
+// A mistyped/blank backend URL is a settings problem, not a dead network —
+// it must never look like OFFLINE. Marked so callers can keep writes queued.
+function configError(msg) {
+  const err = new Error(msg);
+  err.configError = true;
+  return err;
+}
+
+function isAuthError(err) {
+  return /unauthor|bad or missing key|invalid key/i.test(String((err && err.message) || ''));
+}
+
 async function api(action, payload) {
   if (config && config.demo) return demoApi(action, payload);
+
+  // Parsed before any fetch so a bad URL is distinguishable from a network
+  // failure — one is fixed in Settings, the other by waiting (audit 0.6)
+  let endpoint;
+  try {
+    endpoint = new URL(config.url);
+  } catch (e) {
+    const bad = configError('Backend URL galat hai — Settings me check karein');
+    toast(bad.message, true);
+    throw bad;
+  }
 
   busy(true);
   try {
     let res;
     if (action === 'list') {
-      const u = new URL(config.url);
-      u.searchParams.set('action', 'list');
-      u.searchParams.set('key', config.key);
-      res = await fetch(u.toString());
+      endpoint.searchParams.set('action', 'list');
+      endpoint.searchParams.set('key', config.key);
+      res = await fetch(endpoint.toString());
     } else {
       // text/plain keeps the request "simple" so Apps Script needs no CORS preflight
-      res = await fetch(config.url, {
+      res = await fetch(endpoint.toString(), {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify(Object.assign({ action, key: config.key }, payload)),
@@ -170,9 +198,11 @@ async function api(action, payload) {
     const json = await res.json();
     if (!json.ok) throw new Error(json.error || 'Request failed');
     setOffline(false);
+    if (action === 'list') setAuthBad(false);
     return json.data;
   } catch (err) {
-    if (err instanceof TypeError) setOffline(true); // network failure
+    if (err instanceof TypeError) setOffline(true);            // network failure
+    else if (action === 'list' && isAuthError(err)) setAuthBad(true);
     throw err;
   } finally {
     busy(false);
@@ -181,12 +211,19 @@ async function api(action, payload) {
 
 function setOffline(off) { $('chip-offline').hidden = !off; }
 
+// A wrong/rotated key used to show nothing at all — now it stays on screen
+// until a list call succeeds. Tapping the chip opens Settings.
+function setAuthBad(bad) {
+  authBad = !!bad;
+  updateChips();
+}
+
 async function refresh(silent) {
   if (queue.length) { render(); processQueue(); return; } // local truth wins until synced
   try {
     const data = await api('list');
     db = { users: data.users || [], transactions: data.transactions || [] };
-    saveJSON(LS_CACHE, db);
+    saveCache();
     render();
   } catch (err) {
     if (!silent) toast('Could not sync: ' + err.message, true);
@@ -201,36 +238,108 @@ function saveQueue() {
     saveJSON(LS_QUEUE, queue);
   } catch (e) {
     // Storage full — drop queued photo payloads (entries themselves survive)
-    let dropped = false;
-    queue.forEach((item) => {
-      if (item.payload && item.payload.data && item.payload.data.photo) {
-        delete item.payload.data.photo;
-        dropped = true;
-      }
-    });
-    if (dropped) {
+    if (dropQueuedPhotos()) {
       toast('Storage full — a queued photo was dropped; the entry is safe', true);
       try { saveJSON(LS_QUEUE, queue); } catch (e2) { /* give up quietly */ }
+      try { saveJSON(LS_FAILED, failed); } catch (e2) { /* give up quietly */ }
     }
   }
-  updatePendingChip();
+  updateChips();
 }
 
-function updatePendingChip() {
-  const chip = $('chip-pending');
-  chip.hidden = queue.length === 0;
-  chip.textContent = queue.length + ' pending';
+// Photo bytes (~1.4MB b64 each) are the only thing in local storage big
+// enough to blow the quota — dropping them keeps the entries themselves.
+function dropQueuedPhotos() {
+  let dropped = false;
+  queue.concat(failed).forEach((item) => {
+    if (item.payload && item.payload.data && item.payload.data.photo) {
+      delete item.payload.data.photo;
+      dropped = true;
+    }
+  });
+  return dropped;
 }
 
-function enqueue(action, payload, tmpId) {
+// The cached ledger must never take an entry down with it: on a full phone we
+// free what we can, tell the merchant what was lost, and carry on (audit 0.5).
+function saveCache() {
+  try {
+    saveJSON(LS_CACHE, db);
+  } catch (e) {
+    const dropped = dropQueuedPhotos();
+    if (dropped) {
+      try { saveJSON(LS_QUEUE, queue); } catch (e2) { /* keep going */ }
+      try { saveJSON(LS_FAILED, failed); } catch (e2) { /* keep going */ }
+    }
+    try { saveJSON(LS_CACHE, db); } catch (e3) { /* stale cache — the queue still holds the truth */ }
+    toast(dropped
+      ? 'Phone ki memory bhar gayi — entry save hui, par photo nahi'
+      : 'Phone ki memory bhar gayi — entry save hui, par phone par nahi rakhi ja saki', true);
+  }
+}
+
+function saveFailed() {
+  try {
+    saveJSON(LS_FAILED, failed);
+  } catch (e) {
+    if (dropQueuedPhotos()) { try { saveJSON(LS_FAILED, failed); } catch (e2) { /* memory only */ } }
+  }
+  updateChips();
+}
+
+function updateChips() {
+  const pending = $('chip-pending');
+  pending.hidden = queue.length === 0;
+  pending.textContent = queue.length + ' pending';
+
+  const bad = $('chip-failed');
+  bad.hidden = failed.length === 0;
+  bad.textContent = failed.length + ' nahi bache';
+
+  $('chip-auth').hidden = !authBad;
+}
+
+function enqueue(action, payload, tmpId, undo) {
   // Demo writes go straight to the local demo store — no queue, no chip
   if (config && config.demo) {
     api(action, payload).then(() => refresh(true));
     return;
   }
-  queue.push({ action, payload, tmpId: tmpId || null });
+  // Everything needed to undo the optimistic local change if the server
+  // refuses this write: an add needs only its temporary id, an edit or delete
+  // needs a pre-image of what it overwrote.
+  const rollback = undo || (tmpId ? { type: action, tmpId } : null);
+  queue.push({
+    action,
+    payload,
+    tmpId: tmpId || null,
+    undo: rollback,
+    label: describeWrite(action, payload, rollback),   // named while the entity still exists
+  });
   saveQueue();
   processQueue();
+}
+
+function userName(id) {
+  const u = db.users.find((x) => String(x.user_id) === String(id));
+  return u ? u.name : '';
+}
+
+// Short human label for the failed list — "₹888 · Ramu Halwai"
+function describeWrite(action, payload, undo) {
+  const d = (payload && payload.data) || {};
+  const txn = (undo && undo.txn) || null;
+  const user = (undo && undo.user) || null;
+  const join = (...parts) => parts.filter(Boolean).join(' · ');
+  switch (action) {
+    case 'addTxn': return join(money(d.amount), userName(d.user_id));
+    case 'updateTxn': return join(money(d.amount), userName(d.user_id) || (txn && userName(txn.user_name)), 'badla');
+    case 'deleteTxn': return join(txn ? money(txn.amount) : 'Entry', txn && userName(txn.user_name), 'hataya');
+    case 'addUser': return join(d.name, 'naya customer');
+    case 'updateUser': return join(d.name || (user && user.name), 'customer badla');
+    case 'deleteUser': return join(user ? user.name : 'Customer', 'hataya');
+    default: return action;
+  }
 }
 
 let processing = false;
@@ -244,11 +353,28 @@ async function processQueue() {
       try {
         result = await api(item.action, item.payload);
       } catch (err) {
-        if (err instanceof TypeError) return; // offline — keep queued, retry later
-        // Server rejected it (bad data, already deleted, …) — drop so the queue can't jam
+        // Offline, or a backend URL that needs fixing — keep queued, retry later
+        if (err instanceof TypeError || (err && err.configError)) return;
+        // The server refused it (bad key, already deleted, bad data). Drop it
+        // so the queue can't jam, undo the optimistic local change, and park
+        // it where the merchant can see it — a rejected write must never just
+        // disappear while the ledger keeps showing it (audit 0.1).
         queue.shift();
+        rollbackWrite(item);
+        failed.push({
+          action: item.action,
+          payload: item.payload,
+          tmpId: item.tmpId || null,
+          undo: item.undo || null,
+          label: item.label || describeWrite(item.action, item.payload, item.undo),
+          error: err.message,
+          at: Date.now(),
+        });
+        saveCache();
         saveQueue();
-        toast('One change was rejected: ' + err.message, true);
+        saveFailed();
+        render();
+        toast('Save nahi hua: ' + failed[failed.length - 1].label, true);
         continue;
       }
       // success — resolve temporary ids to server ids
@@ -269,26 +395,133 @@ function remapUserId(tmpId, realId, serverUser) {
   const u = db.users.find((x) => x.user_id === tmpId);
   if (u) Object.assign(u, serverUser || {}, { user_id: realId });
   db.transactions.forEach((t) => { if (t.user_name === tmpId) t.user_name = realId; });
-  queue.forEach((item) => {
+  // failed items too: retrying a parked entry after its customer finally
+  // landed must point at the real customer, not the dead temporary id
+  queue.concat(failed).forEach((item) => {
     if (item.payload && item.payload.data && item.payload.data.user_id === tmpId) {
       item.payload.data.user_id = realId;
     }
     if (item.payload && item.payload.id === tmpId) item.payload.id = realId;
   });
   if (currentCustomerId === tmpId) currentCustomerId = realId;
-  saveJSON(LS_CACHE, db);
+  saveCache();
   saveQueue();
+  saveFailed();
   render();
 }
 
 function remapTxnId(tmpId, realId) {
   const t = db.transactions.find((x) => x.id === tmpId);
   if (t) t.id = realId;
-  queue.forEach((item) => {
+  queue.concat(failed).forEach((item) => {
     if (item.payload && item.payload.id === tmpId) item.payload.id = realId;
   });
-  saveJSON(LS_CACHE, db);
+  saveCache();
   saveQueue();
+  saveFailed();
+}
+
+// ---------------------------------------------------------------- failed writes
+
+// Undo the optimistic local change behind a write the server refused.
+// Pre-images are captured in enqueue(); adds carry only their temporary id.
+function rollbackWrite(item) {
+  const u = item && item.undo;
+  if (!u) return;   // pre-0.1 queue item — nothing captured, leave the cache alone
+  if (u.type === 'addTxn') {
+    db.transactions = db.transactions.filter((t) => String(t.id) !== String(u.tmpId));
+  } else if (u.type === 'addUser') {
+    db.users = db.users.filter((x) => String(x.user_id) !== String(u.tmpId));
+    db.transactions = db.transactions.filter((t) => String(t.user_name) !== String(u.tmpId));
+    if (String(currentCustomerId) === String(u.tmpId)) goHome();
+  } else if (u.type === 'txn' && u.txn) {
+    const i = db.transactions.findIndex((t) => String(t.id) === String(u.txn.id));
+    if (i >= 0) db.transactions[i] = clone(u.txn);
+    else db.transactions.push(clone(u.txn));
+  } else if (u.type === 'user' && u.user) {
+    const i = db.users.findIndex((x) => String(x.user_id) === String(u.user.user_id));
+    if (i >= 0) db.users[i] = clone(u.user);
+    else db.users.push(clone(u.user));
+    (u.txns || []).forEach((t) => {
+      if (!db.transactions.some((x) => String(x.id) === String(t.id))) db.transactions.push(clone(t));
+    });
+  }
+}
+
+// Retry = put the optimistic local copy back exactly as the original save did,
+// then queue the write again.
+function reapplyWrite(f) {
+  const d = (f.payload && f.payload.data) || {};
+  const id = f.payload && f.payload.id;
+  if (f.action === 'addTxn') {
+    db.transactions.push({
+      id: f.tmpId, user_name: d.user_id, date: d.date, type: d.type,
+      amount: d.amount, comment: d.comment || '', photo: d.photo ? 'pending' : '',
+    });
+  } else if (f.action === 'addUser') {
+    db.users.push({ user_id: f.tmpId, name: d.name, phone: d.phone || '', created_at: todayISO(), token: '' });
+  } else if (f.action === 'updateTxn') {
+    const t = db.transactions.find((x) => String(x.id) === String(id));
+    if (t) Object.assign(t, d, {
+      user_name: d.user_id,
+      photo: d.photo ? 'pending' : (d.photo === '' ? '' : (t.photo || '')),
+    });
+  } else if (f.action === 'updateUser') {
+    const u = db.users.find((x) => String(x.user_id) === String(id));
+    if (u) Object.assign(u, { name: d.name, phone: d.phone });
+  } else if (f.action === 'deleteTxn') {
+    db.transactions = db.transactions.filter((x) => String(x.id) !== String(id));
+  } else if (f.action === 'deleteUser') {
+    db.users = db.users.filter((x) => String(x.user_id) !== String(id));
+    db.transactions = db.transactions.filter((x) => String(x.user_name) !== String(id));
+  }
+}
+
+function retryFailed(i) {
+  const f = failed[i];
+  if (!f) return;
+  // An entry can only go back if its customer is still here — when the
+  // customer's own write also failed, that one has to be retried first.
+  const uid = f.payload && f.payload.data && f.payload.data.user_id;
+  if (uid && !db.users.some((x) => String(x.user_id) === String(uid))) {
+    toast('Pehle customer ko dobara bhejein', true);
+    return;
+  }
+  failed.splice(i, 1);
+  reapplyWrite(f);
+  saveCache();
+  queue.push({
+    action: f.action, payload: f.payload, tmpId: f.tmpId || null,
+    undo: f.undo || null, label: f.label,
+  });
+  saveQueue();
+  saveFailed();
+  render();
+  renderFailed();
+  if (!failed.length) $('dlg-failed').close();
+  processQueue();
+}
+
+function discardFailed(i) {
+  const f = failed[i];
+  if (!f) return;
+  failed.splice(i, 1);
+  saveFailed();
+  render();
+  renderFailed();
+  if (!failed.length) $('dlg-failed').close();
+  toast('Hata diya — ' + f.label);
+}
+
+function renderFailed() {
+  $('failed-list').innerHTML = failed.map((f, i) => `<li class="failed-row">
+      <div class="failed-main">
+        <div class="failed-label">${escapeHtml(f.label || f.action)}</div>
+        <div class="failed-why">${escapeHtml(f.error || 'Server ne mana kar diya')}${f.at ? ' · ' + escapeHtml(relDate(new Date(f.at))) : ''}</div>
+      </div>
+      <button type="button" class="btn btn-ghost failed-act" data-retry="${i}">Retry</button>
+      <button type="button" class="btn btn-danger-ghost failed-act" data-drop="${i}">Hatayein</button>
+    </li>`).join('');
 }
 
 function isTmp(id) { return /^tmp/.test(String(id)); }
@@ -405,7 +638,7 @@ function normalizePhone(raw) {
 function render() {
   renderHome();
   if (currentCustomerId) renderCustomer();
-  updatePendingChip();
+  updateChips();
 }
 
 function renderHome() {
@@ -811,7 +1044,7 @@ function init() {
     try {
       const data = await api('list');
       db = { users: data.users || [], transactions: data.transactions || [] };
-      saveJSON(LS_CACHE, db);
+      saveCache();
       saveJSON(LS_CONFIG, config);
       show('home');
       render();
@@ -835,6 +1068,17 @@ function init() {
   $('search').addEventListener('input', renderHome);
   $('btn-refresh').addEventListener('click', () => refresh());
   $('chip-pending').addEventListener('click', () => { toast('Retrying sync…'); processQueue(); });
+  $('chip-failed').addEventListener('click', () => {
+    renderFailed();
+    $('dlg-failed').showModal();
+  });
+  $('chip-auth').addEventListener('click', () => $('btn-settings').click());
+  $('failed-list').addEventListener('click', (e) => {
+    const btn = e.target.closest('.failed-act');
+    if (!btn) return;
+    if (btn.dataset.retry !== undefined) retryFailed(Number(btn.dataset.retry));
+    else if (btn.dataset.drop !== undefined) discardFailed(Number(btn.dataset.drop));
+  });
   $('customer-list').addEventListener('click', (e) => {
     const row = e.target.closest('.customer-row');
     if (row) openCustomer(row.dataset.id);
@@ -873,8 +1117,9 @@ function init() {
   });
   $('btn-disconnect').addEventListener('click', (e) => {
     if (!armConfirm(e.target, 'disconnect')) return;
-    if (queue.length && !window.confirm(queue.length + ' unsynced change(s) will be lost. Disconnect anyway?')) return;
-    [LS_CONFIG, LS_CACHE, LS_DEMO, LS_QUEUE].forEach((k) => localStorage.removeItem(k));
+    const unsynced = queue.length + failed.length;
+    if (unsynced && !window.confirm(unsynced + ' unsynced change(s) will be lost. Disconnect anyway?')) return;
+    [LS_CONFIG, LS_CACHE, LS_DEMO, LS_QUEUE, LS_FAILED].forEach((k) => localStorage.removeItem(k));
     location.reload();
   });
 
@@ -942,15 +1187,17 @@ function init() {
 
     if (editingTxnId) {
       const t = db.transactions.find((x) => x.id === editingTxnId);
+      const pre = clone(t);   // rollback pre-image, taken before we overwrite it
       const localPhoto = photoState.mode === 'new' ? 'pending'
         : photoState.mode === 'removed' ? '' : (t.photo || '');
       Object.assign(t, payload, { user_name: payload.user_id, photo: localPhoto });
       const queuedAdd = isTmp(editingTxnId) && queuedAddFor(editingTxnId);
       if (queuedAdd) {
         Object.assign(queuedAdd.payload.data, payload);
+        queuedAdd.label = describeWrite(queuedAdd.action, queuedAdd.payload, queuedAdd.undo);
         saveQueue(); processQueue();
       } else {
-        enqueue('updateTxn', { id: editingTxnId, data: payload });
+        enqueue('updateTxn', { id: editingTxnId, data: payload }, null, { type: 'txn', txn: pre });
       }
     } else {
       const tmpId = 'tmp' + Date.now();
@@ -960,7 +1207,7 @@ function init() {
       db.transactions.push(localTxn);
       enqueue('addTxn', { data: payload }, tmpId);
     }
-    saveJSON(LS_CACHE, db);
+    saveCache();
     render();
     if (!navigator.onLine) toast('Saved — will sync when you are back online');
   });
@@ -968,15 +1215,16 @@ function init() {
     if (!armConfirm(e.target, 'del-txn')) return;
     $('dlg-txn').close();
     const id = editingTxnId;
+    const pre = clone(db.transactions.find((x) => x.id === id));
     db.transactions = db.transactions.filter((x) => x.id !== id);
     const queuedAdd = isTmp(id) && queuedAddFor(id);
     if (queuedAdd) {
       queue = queue.filter((item) => item !== queuedAdd);
       saveQueue();
     } else {
-      enqueue('deleteTxn', { id });
+      enqueue('deleteTxn', { id }, null, pre ? { type: 'txn', txn: pre } : null);
     }
-    saveJSON(LS_CACHE, db);
+    saveCache();
     render();
     toast('Entry deleted');
   });
@@ -995,13 +1243,16 @@ function init() {
     }
     if (editingCustomerId) {
       const u = db.users.find((x) => x.user_id === editingCustomerId);
+      const pre = clone(u);   // rollback pre-image, taken before we overwrite it
       Object.assign(u, { name, phone });
       const queuedAdd = isTmp(editingCustomerId) && queuedAddFor(editingCustomerId);
       if (queuedAdd) {
         Object.assign(queuedAdd.payload.data, { name, phone });
+        queuedAdd.label = describeWrite(queuedAdd.action, queuedAdd.payload, queuedAdd.undo);
         saveQueue(); processQueue();
       } else {
-        enqueue('updateUser', { id: editingCustomerId, data: { name, phone } });
+        enqueue('updateUser', { id: editingCustomerId, data: { name, phone } }, null,
+          { type: 'user', user: pre });
       }
     } else {
       const tmpId = 'tmpu' + Date.now();
@@ -1009,13 +1260,16 @@ function init() {
       enqueue('addUser', { data: { name, phone } }, tmpId);
       toast(`${name} added`);
     }
-    saveJSON(LS_CACHE, db);
+    saveCache();
     render();
   });
   $('cust-delete').addEventListener('click', (e) => {
     if (!armConfirm(e.target, 'del-cust', 'Tap again — deletes all entries')) return;
     $('dlg-customer').close();
     const id = editingCustomerId;
+    // pre-image for rollback: the customer AND every entry that goes with them
+    const preUser = clone(db.users.find((x) => x.user_id === id));
+    const preTxns = clone(db.transactions.filter((x) => String(x.user_name) === String(id)));
     db.users = db.users.filter((x) => x.user_id !== id);
     db.transactions = db.transactions.filter((x) => x.user_name !== id);
     const queuedAdd = isTmp(id) && queuedAddFor(id);
@@ -1025,9 +1279,10 @@ function init() {
         !(item.payload && item.payload.data && item.payload.data.user_id === id));
       saveQueue();
     } else {
-      enqueue('deleteUser', { id });
+      enqueue('deleteUser', { id }, null,
+        preUser ? { type: 'user', user: preUser, txns: preTxns } : null);
     }
-    saveJSON(LS_CACHE, db);
+    saveCache();
     goHome();
     toast('Customer deleted');
   });

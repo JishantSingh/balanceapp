@@ -48,7 +48,9 @@
     <div class="masthead-actions">
       <span id="chip-demo" class="chip chip-demo" hidden>demo</span>
       <span id="chip-offline" class="chip chip-offline" hidden>offline</span>
+      <button id="chip-auth" class="chip chip-failed" hidden title="Key galat hai — Settings kholein">key galat</button>
       <button id="chip-pending" class="chip chip-pending" hidden title="Entries waiting to sync — tap to retry"></button>
+      <button id="chip-failed" class="chip chip-failed" hidden title="Yeh save nahi ho paaye — tap karein"></button>
       <button id="btn-refresh" class="iconbtn" title="Refresh" aria-label="Refresh">
         <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 6.3M20 5v6h-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
@@ -218,6 +220,19 @@
       <span class="flex-spring"></span>
       <button type="button" class="btn btn-ghost" data-close>Cancel</button>
       <button type="submit" id="cust-save" class="btn btn-ink">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ============ FAILED WRITES DIALOG ============ -->
+<dialog id="dlg-failed" class="sheet">
+  <form method="dialog">
+    <div class="sheet-title gave">Yeh save nahi ho paaye</div>
+    <p class="failed-help">Server ne inko nahi liya, isliye khaate se hata diye gaye. Dobara bhejein ya hatayein.</p>
+    <ul id="failed-list" class="failed-list"></ul>
+    <div class="sheet-actions">
+      <span class="flex-spring"></span>
+      <button type="submit" class="btn btn-ghost">Band karein</button>
     </div>
   </form>
 </dialog>
