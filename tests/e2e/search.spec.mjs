@@ -16,7 +16,6 @@ test('a no-match search must show a next action, not a blank screen', async ({ p
   // UX-AUDIT 3.2 — today the list is simply empty (the empty-state is gated
   // on total customers, not filtered count). Fixed behavior: a visible
   // no-results state (#search-empty) offering to create the typed name.
-  test.fail(true, 'audit 3.2: no-match search is a dead end');
   const backend = createBackend(seedLedger());
   await openLedger(page, backend);
   await page.locator('#search').fill('zzz');
@@ -28,7 +27,6 @@ test('a just-created customer must appear at the top of the list', async ({ page
   // UX-AUDIT 0.8 — created_at carries no time, ties sort by array order, and
   // the new user is pushed last: the person created 2 seconds ago is at the
   // BOTTOM of today's rows.
-  test.fail(true, 'audit 0.8: new customer sorts last among same-day rows');
   const backend = createBackend(seedLedger());
   await openLedger(page, backend);
 

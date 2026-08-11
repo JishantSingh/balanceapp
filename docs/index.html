@@ -22,6 +22,10 @@
     </div>
     <p class="connect-tag reveal d1">A ledger that lives in <em>your own</em> Google&nbsp;Sheet.<br>No company in the middle. Free, forever.</p>
 
+    <!-- invite-link state: "khul raha hai…" while the key is being checked,
+         and the plain-Hinglish failure if it does not work (audit 0.3) -->
+    <p id="connect-note" class="connect-alert reveal d2" hidden></p>
+
     <div class="card connect-card reveal d2">
       <label class="field">
         <span>Apps Script web app URL</span>
@@ -87,6 +91,13 @@
   <div id="home-empty" class="empty" hidden>
     <p class="empty-title">No customers yet</p>
     <p class="empty-sub">Add your first customer and start<br>writing udhaar in your own bahi.</p>
+  </div>
+  <!-- a search that matches nothing is not an empty screen: the typed name is
+       almost always the customer who still has to be created (audit 3.2) -->
+  <div id="search-empty" class="empty" hidden>
+    <p id="search-empty-title" class="empty-title"></p>
+    <p class="empty-sub">Is naam ka koi customer nahi hai.</p>
+    <button type="button" id="search-empty-add" class="btn btn-ink"></button>
   </div>
 
   <button id="fab" class="fab" aria-label="Add customer">
@@ -181,6 +192,7 @@
       <label class="field">
         <span>Note <em>(optional)</em></span>
         <input id="txn-comment" type="text" placeholder="parchi, item…" autocomplete="off">
+        <small class="field-help">Yeh note customer ko uske passbook mein dikhega.</small>
       </label>
     </div>
     <div class="field-row">
@@ -218,6 +230,12 @@
       <span>Phone <em>(for WhatsApp reminders)</em></span>
       <input id="cust-input-phone" type="tel" placeholder="98765 43210" autocomplete="off">
     </label>
+    <!-- the safe link: read-only, one customer. The dangerous one (full access)
+         lives in Settings behind a confirm (audit 1.1) -->
+    <div id="cust-passbook-wrap" hidden>
+      <button type="button" id="cust-passbook" class="btn btn-ghost btn-wide">🔗 Passbook link copy karein</button>
+      <small class="field-help">Sirf yeh customer, sirf dekhne ke liye</small>
+    </div>
     <p id="cust-error" class="form-error" hidden></p>
     <div class="sheet-actions">
       <button type="button" id="cust-delete" class="btn btn-danger-ghost" hidden>Delete</button>
@@ -264,7 +282,10 @@
       <textarea id="set-template" rows="4" spellcheck="false"></textarea>
       <small class="field-help">Use {name}, {amount}, {merchant} and {passbook} — filled in automatically. {passbook} becomes the customer's private ledger link.</small>
     </label>
-    <button type="button" id="btn-invite" class="btn btn-ghost btn-wide">🔗 Copy invite link for this ledger</button>
+    <div id="invite-wrap">
+      <button type="button" id="btn-invite" class="btn btn-danger-ghost btn-wide">🔗 Doosre phone par ye khata kholein — poora access</button>
+      <small class="field-help">Is link se poora khata khulta hai — dekhna aur badalna dono. Sirf apne bharose walon ko bhejein.</small>
+    </div>
     <details class="settings-conn">
       <summary>Connection</summary>
       <label class="field"><span>Apps Script URL</span><input id="set-url" type="url" autocomplete="off"></label>
@@ -275,6 +296,22 @@
       <span class="flex-spring"></span>
       <button type="button" class="btn btn-ghost" data-close>Cancel</button>
       <button type="submit" class="btn btn-ink">Save settings</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ============ LEDGER SWITCH DIALOG ============ -->
+<!-- An invite link for a different ledger (or a refreshed key) never applies
+     itself silently: this phone's khata is at stake (audit 0.3). -->
+<dialog id="dlg-switch" class="sheet">
+  <form method="dialog">
+    <div class="sheet-title">Doosra khata jodein?</div>
+    <p id="switch-msg" class="failed-help"></p>
+    <div class="sheet-actions">
+      <button type="button" id="switch-sync" class="btn btn-ghost" hidden>Abhi sync karein</button>
+      <span class="flex-spring"></span>
+      <button type="button" class="btn btn-ghost" data-close>Rehne dein</button>
+      <button type="button" id="switch-go" class="btn btn-ink">Jodein</button>
     </div>
   </form>
 </dialog>

@@ -284,11 +284,23 @@ function setAuthBad(bad) {
   updateChips();
 }
 
+// The sheet has no column for _created (the audit-0.8 tiebreak), so a sync
+// would otherwise drop today's new customer straight back to the bottom of
+// today's rows. Carry the local stamp across.
+function keepLocalMeta(users) {
+  const was = new Map(db.users.map((u) => [String(u.user_id), u]));
+  users.forEach((u) => {
+    const old = was.get(String(u.user_id));
+    if (old && old._created && !u._created) u._created = old._created;
+  });
+  return users;
+}
+
 async function refresh(silent) {
   if (queue.length) { render(); processQueue(); return; } // local truth wins until synced
   try {
     const data = await api('list');
-    db = { users: data.users || [], transactions: data.transactions || [] };
+    db = { users: keepLocalMeta(data.users || []), transactions: data.transactions || [] };
     saveCache();
     render();
   } catch (err) {
@@ -525,7 +537,10 @@ function reapplyWrite(f) {
       amount: d.amount, comment: d.comment || '', photo: d.photo ? 'pending' : '',
     });
   } else if (f.action === 'addUser') {
-    db.users.push({ user_id: f.tmpId, name: d.name, phone: d.phone || '', created_at: todayISO(), token: '' });
+    db.users.push({
+      user_id: f.tmpId, name: d.name, phone: d.phone || '',
+      created_at: todayISO(), token: '', _created: Date.now(),
+    });
   } else if (f.action === 'updateTxn') {
     const t = db.transactions.find((x) => String(x.id) === String(id));
     if (t) Object.assign(t, d, {
@@ -641,7 +656,10 @@ function demoApi(action, payload) {
     case 'photo':
       return Promise.resolve({ b64: demoPhotos[payload.id] || '', mime: 'image/jpeg' });
     case 'addUser':
-      demo.users.push({ user_id: id(), name: payload.data.name, created_at: todayISO(), phone: payload.data.phone || '', token: '' });
+      demo.users.push({
+        user_id: id(), name: payload.data.name, created_at: todayISO(),
+        phone: payload.data.phone || '', token: '', _created: Date.now(),
+      });
       break;
     case 'updateUser': {
       const u = demo.users.find((x) => x.user_id === payload.id);
@@ -690,6 +708,23 @@ function balanceOf(userId) {
     (sum, t) => sum + (t.type === 'received' ? -1 : 1) * (Number(t.amount) || 0), 0);
 }
 
+/* What a phone number may look like before it is allowed into the ledger
+   (audit 1.5). Empty is fine — plenty of customers have no number. Otherwise
+   it is the 10-digit local number, tolerating a leading 0 or the country code
+   already typed in. Everything else (7 digits, junk text) is blocked with a
+   readable reason instead of failing later inside WhatsApp. */
+function checkPhone(raw) {
+  const digits = String(raw || '').replace(/\D/g, '');
+  const cc = (config && config.cc) || '91';
+  if (!digits) return { ok: true, value: '' };
+  if (digits.length === 10) return { ok: true, value: digits };
+  if (digits.length === 11 && digits.startsWith('0')) return { ok: true, value: digits.slice(1) };
+  if (digits.length === cc.length + 10 && digits.startsWith(cc)) {
+    return { ok: true, value: digits.slice(cc.length) };
+  }
+  return { ok: false, value: digits };
+}
+
 function normalizePhone(raw) {
   let digits = String(raw || '').replace(/\D/g, '');
   if (!digits) return '';
@@ -720,10 +755,14 @@ function renderHome() {
   $('sum-give').textContent = money(totalAdv);
   $('sum-count').textContent = db.users.length;
 
-  const q = $('search').value.trim().toLowerCase();
+  const typed = $('search').value.trim();
+  const q = typed.toLowerCase();
   const filtered = items
     .filter((it) => !q || it.u.name.toLowerCase().includes(q))
-    .sort((a, b) => b.last - a.last);
+    // created_at has no time of day, so a customer made two seconds ago ties
+    // with everyone who transacted today and falls to the bottom. The local
+    // _created stamp breaks that tie in favour of the newest (audit 0.8).
+    .sort((a, b) => (b.last - a.last) || ((b.u._created || 0) - (a.u._created || 0)));
 
   $('customer-list').innerHTML = filtered.map((it, i) => {
     const tag = it.bal > 0 ? 'due' : it.bal < 0 ? 'adv' : '';
@@ -740,7 +779,16 @@ function renderHome() {
     </li>`;
   }).join('');
 
-  $('home-empty').hidden = db.users.length > 0;
+  // A search that matches nothing used to leave a blank screen — the empty
+  // state was gated on total customers, not on the filtered count. The typed
+  // name is almost always someone who still has to be created (audit 3.2).
+  const noMatch = !!q && filtered.length === 0;
+  $('home-empty').hidden = db.users.length > 0 || !!q;
+  $('search-empty').hidden = !noMatch;
+  if (noMatch) {
+    $('search-empty-title').textContent = `'${typed}' nahi mila`;
+    $('search-empty-add').textContent = `＋ '${typed}' ko naya customer banayein`;
+  }
   $('chip-demo').hidden = !(config && config.demo);
 }
 
@@ -892,22 +940,159 @@ function openCustomer(id, push) {
 // ---------------------------------------------------------------- invite & passbook links
 
 // #s=… carries a merchant connection (URL + key). Fragment never reaches servers.
-function applyInviteLink() {
+// Parsing is *all* this does: nothing in the link is believed until the backend
+// has answered a real list call with it (audit 0.3).
+function parseInviteLink() {
   const m = /#s=([A-Za-z0-9\-_]+)/.exec(location.hash);
-  if (!m) return false;
+  if (!m) return null;
   let payload;
   try {
     payload = JSON.parse(atob(m[1].replace(/-/g, '+').replace(/_/g, '/')));
-  } catch (e) { return false; }
-  if (!payload.u || !/^https:\/\/script\.google(?:usercontent)?\.com\//.test(payload.u)) return false;
-  config = Object.assign(
-    { currency: '₹', cc: '91', merchant: '', template: DEFAULT_TEMPLATE },
-    config || {},
-    { url: payload.u, key: payload.k || '', demo: false }
-  );
-  saveJSON(LS_CONFIG, config);
+  } catch (e) { return null; }
+  if (!payload.u || !/^https:\/\/script\.google(?:usercontent)?\.com\//.test(payload.u)) return null;
+  // the key is a credential — get it out of the address bar immediately
   history.replaceState(null, '', location.pathname + location.search);
-  return true;
+  return { u: payload.u, k: payload.k || '' };
+}
+
+/* ---------- connecting to a ledger -------------------------------------
+
+   Two rules, both learned the hard way (audit 0.3):
+   1. A connection is never committed before a real `list` call succeeds with
+      it. "Connected ✓" over an empty ledger invites entries that die later.
+   2. Nothing from the old connection may ride into the new one — not the
+      cache, not the queue (ledger A's unsynced writes replaying into ledger
+      B's sheet), not the demo's shop name signing real reminders. */
+
+let connecting = false;      // a validation is in flight — leave config alone
+let pendingInvite = null;    // an invite waiting on the switch dialog
+
+function wipeLedgerData() {
+  [LS_CACHE, LS_QUEUE, LS_FAILED, LS_DEMO, LS_THUMBS].forEach((k) => localStorage.removeItem(k));
+  db = { users: [], transactions: [] };
+  queue = [];
+  failed = [];
+  thumbs = {};
+  Object.keys(photoCache).forEach((k) => delete photoCache[k]);
+  Object.keys(demoPhotos).forEach((k) => delete demoPhotos[k]);
+  currentCustomerId = null;
+  setAuthBad(false);
+}
+
+// Device preferences (currency, country code, a template the merchant typed)
+// are theirs and carry over. Shop identity belongs to the *ledger*: a demo's
+// "Demo General Store" — or the previous ledger's name — must never end up
+// signing real WhatsApp reminders. The demo ships the stock template, so
+// "reset it if it equals the demo's" is exactly the default fallback below.
+function freshConfig(url, key, prev) {
+  const sameLedger = !!(prev && !prev.demo && prev.url === url);
+  return {
+    url,
+    key: key || '',
+    demo: false,
+    currency: (prev && prev.currency) || '₹',
+    cc: (prev && prev.cc) || '91',
+    merchant: sameLedger ? (prev.merchant || '') : '',
+    template: (prev && prev.template) || DEFAULT_TEMPLATE,
+  };
+}
+
+// Ask the backend, with the candidate credentials, before anything is saved.
+// On failure the old config is put back exactly as it was.
+async function validateConfig(candidate) {
+  const prev = config;
+  config = candidate;
+  try {
+    return await api('list');
+  } catch (err) {
+    config = prev;
+    setAuthBad(false);   // the bad key was the candidate's, not this ledger's
+    throw err;
+  }
+}
+
+// Validate → wipe (only when the ledger actually changes) → commit → render.
+// Throws if the credentials do not work; the device is untouched in that case.
+async function connectTo(invite) {
+  const prev = config;
+  const candidate = freshConfig(invite.u, invite.k, prev);
+  const sameLedger = !!(prev && !prev.demo && prev.url === candidate.url);
+  const data = await validateConfig(candidate);
+  if (!sameLedger) wipeLedgerData();     // another khata (or the demo's) — nothing survives
+  config = candidate;
+  saveJSON(LS_CONFIG, config);
+  db = { users: data.users || [], transactions: data.transactions || [] };
+  saveCache();
+  show('home');
+  render();
+  return sameLedger;
+}
+
+function connectNote(msg, isErr) {
+  const el = $('connect-note');
+  el.textContent = msg || '';
+  el.className = 'connect-alert reveal d2' + (isErr ? ' err' : '');
+  el.hidden = !msg;
+}
+
+// Normal start-up: cached copy first, then a background sync.
+function bootLedger(opts) {
+  if (!config) { show('connect'); return; }
+  show('home');
+  render();
+  if (!opts || opts.sync !== false) refresh(true);
+}
+
+// The invite path. Every branch ends with the merchant on a screen that tells
+// the truth about which khata this phone is holding.
+async function openInvite(invite) {
+  const prev = config;
+  const prevReal = !!(prev && !prev.demo);
+  const sameLedger = prevReal && prev.url === invite.u;
+  if (sameLedger && (prev.key || '') === invite.k) { bootLedger(); return; }
+
+  // Unsynced writes belong to the ledger they were made in. Until they are
+  // synced or explicitly thrown away, no other connection may touch this phone.
+  const unsynced = queue.length + failed.length;
+  if (prev && unsynced) { bootLedger(); askSwitch(invite, unsynced); return; }
+  if (prevReal && !sameLedger) { bootLedger(); askSwitch(invite, 0); return; }
+
+  await runConnect(invite, prev);
+}
+
+async function runConnect(invite, prev) {
+  connecting = true;
+  if (!prev) { show('connect'); connectNote('Ledger khul raha hai — thoda intezaar karein…'); }
+  else bootLedger({ sync: false });   // keep the old ledger on screen, don't sync it mid-swap
+  try {
+    const sameLedger = await connectTo(invite);
+    connectNote('');
+    toast(sameLedger ? 'Nayi key lag gayi ✓' : 'Khata jud gaya ✓');
+  } catch (err) {
+    if (!prev) {
+      show('connect');
+      connectNote('Yeh link kaam nahi kar raha — bhejne wale se naya link mangwayein', true);
+    } else {
+      bootLedger();   // old khata, untouched
+      toast('Yeh link kaam nahi kar raha — purana khata waisa hi hai', true);
+    }
+  } finally {
+    connecting = false;
+  }
+}
+
+function askSwitch(invite, unsynced) {
+  pendingInvite = invite;
+  const go = $('switch-go');
+  $('switch-msg').textContent = unsynced
+    ? unsynced + ' entry abhi tak sheet me nahi gayi. Pehle unko sync karein — ' +
+      'warna woh galat khaate me chali jayengi.'
+    : 'Is phone par doosra khata khulega. Purana khata hat jayega.';
+  $('switch-sync').hidden = !unsynced;
+  go.textContent = unsynced ? 'Hata kar jodein' : 'Jodein';
+  go.className = 'btn ' + (unsynced ? 'btn-danger-ghost' : 'btn-ink');
+  $('dlg-switch').dataset.drop = unsynced ? '1' : '';
+  showSheet($('dlg-switch'));
 }
 
 function inviteLink() {
@@ -1178,6 +1363,7 @@ function armConfirm(btn, token, warn) {
 function init() {
   // connect screen
   $('btn-connect').addEventListener('click', async () => {
+    if (connecting) return;
     const url = $('cfg-url').value.trim();
     const key = $('cfg-key').value.trim();
     const errEl = $('connect-error');
@@ -1187,23 +1373,22 @@ function init() {
       errEl.hidden = false;
       return;
     }
-    config = { url, key, currency: '₹', cc: '91', merchant: '', template: DEFAULT_TEMPLATE, demo: false };
+    connecting = true;
     try {
-      const data = await api('list');
-      db = { users: data.users || [], transactions: data.transactions || [] };
-      saveCache();
-      saveJSON(LS_CONFIG, config);
-      show('home');
-      render();
-      toast('Connected to your ledger ✓');
+      // same path as an invite: validated first, demo residue never inherited
+      await connectTo({ u: url, k: key });
+      connectNote('');
+      toast('Aapka khata khul gaya ✓');
     } catch (err) {
-      config = null;
       errEl.textContent = 'Could not connect: ' + err.message;
       errEl.hidden = false;
+    } finally {
+      connecting = false;
     }
   });
 
   $('btn-demo').addEventListener('click', () => {
+    if (connecting) return;
     config = { demo: true, currency: '₹', cc: '91', merchant: 'Demo General Store', template: DEFAULT_TEMPLATE };
     saveJSON(LS_CONFIG, config);
     refresh(true);
@@ -1231,6 +1416,31 @@ function init() {
     if (row) openCustomer(row.dataset.id);
   });
   $('fab').addEventListener('click', () => openCustomerForm(null));
+  // a no-match search offers the one thing it can: create that person
+  $('search-empty-add').addEventListener('click', () => openCustomerForm(null, $('search').value.trim()));
+
+  // ledger switch (invite link for a different khata / a refreshed key)
+  $('switch-go').addEventListener('click', async () => {
+    const invite = pendingInvite;
+    const drop = $('dlg-switch').dataset.drop === '1';
+    $('dlg-switch').close();
+    if (!invite || connecting) return;
+    if (drop) {
+      // explicit discard — the only way past unsynced writes
+      queue = [];
+      failed = [];
+      saveQueue();
+      saveFailed();
+      render();
+    }
+    await runConnect(invite, config);
+  });
+  $('switch-sync').addEventListener('click', () => {
+    $('dlg-switch').close();
+    toast('Pehle purani entry sync karein, phir link dobara kholein');
+    processQueue();
+  });
+  $('dlg-switch').addEventListener('close', () => { pendingInvite = null; });
 
   // settings
   $('btn-settings').addEventListener('click', () => {
@@ -1241,13 +1451,17 @@ function init() {
     $('set-url').value = config.url || '';
     $('set-key').value = config.key || '';
     document.querySelector('.settings-conn').open = false;
-    $('btn-invite').hidden = !!config.demo || !config.url;
+    $('invite-wrap').hidden = !!config.demo || !config.url;
     showSheet($('dlg-settings'));
   });
-  $('btn-invite').addEventListener('click', () => {
+  // The dangerous link. The warning lands on the *first* tap — before the copy
+  // exists — not as a 3.2s toast after it is already in the clipboard (1.1).
+  $('btn-invite').addEventListener('click', (e) => {
+    if (!armConfirm(e.currentTarget, 'invite-copy',
+      'Is link se poora khata khul jayega — sirf apne bharose walon ko bhejein')) return;
     copyText(inviteLink())
-      .then(() => toast('Invite link copied — anyone with it gets full access'))
-      .catch(() => toast('Could not copy link', true));
+      .then(() => toast('Link copy ho gaya — sirf bharose wale ko bhejein'))
+      .catch(() => toast('Copy nahi ho paya', true));
   });
   $('form-settings').addEventListener('submit', () => {
     config.merchant = $('set-merchant').value.trim();
@@ -1266,7 +1480,9 @@ function init() {
     if (!armConfirm(e.currentTarget, 'disconnect')) return;
     const unsynced = queue.length + failed.length;
     if (unsynced && !window.confirm(unsynced + ' unsynced change(s) will be lost. Disconnect anyway?')) return;
-    [LS_CONFIG, LS_CACHE, LS_DEMO, LS_QUEUE, LS_FAILED].forEach((k) => localStorage.removeItem(k));
+    // thumbs are bill photos — a "cleared" device must not keep them (audit 0.9)
+    [LS_CONFIG, LS_CACHE, LS_DEMO, LS_QUEUE, LS_FAILED, LS_THUMBS]
+      .forEach((k) => localStorage.removeItem(k));
     location.reload();
   });
 
@@ -1407,9 +1623,22 @@ function init() {
   });
 
   // customer dialog
+  // normalized readback as soon as the field is left, so the merchant sees the
+  // number the reminder will actually use (audit 1.5)
+  $('cust-input-phone').addEventListener('change', (e) => {
+    const ok = checkPhone(e.target.value);
+    if (ok.ok && ok.value) e.target.value = ok.value;
+  });
+  $('cust-passbook').addEventListener('click', () => {
+    const u = db.users.find((x) => String(x.user_id) === String(editingCustomerId));
+    const link = u ? passbookLink(u) : '';
+    if (!link) { toast('Is customer ka passbook link abhi nahi bana', true); return; }
+    copyText(link)
+      .then(() => toast('Passbook link copy ho gaya — sirf dekhne ke liye'))
+      .catch(() => toast('Copy nahi ho paya', true));
+  });
   $('form-customer').addEventListener('submit', (e) => {
     const name = $('cust-input-name').value.trim();
-    const phone = $('cust-input-phone').value.trim();
     const errEl = $('cust-error');
     errEl.hidden = true;
     if (!name) {
@@ -1418,6 +1647,18 @@ function init() {
       errEl.hidden = false;
       return;
     }
+    // A 7-digit number is a wa.me link that fails inside WhatsApp days later,
+    // and junk text opens the contact picker — the balance goes to a stranger.
+    const checked = checkPhone($('cust-input-phone').value);
+    if (!checked.ok) {
+      e.preventDefault();
+      errEl.textContent = 'Phone number 10 digit ka hona chahiye';
+      errEl.hidden = false;
+      $('cust-input-phone').focus();
+      return;
+    }
+    const phone = checked.value;
+    $('cust-input-phone').value = phone;
     if (editingCustomerId) {
       const u = db.users.find((x) => x.user_id === editingCustomerId);
       const pre = clone(u);   // rollback pre-image, taken before we overwrite it
@@ -1433,7 +1674,9 @@ function init() {
       }
     } else {
       const tmpId = 'tmpu' + Date.now();
-      db.users.push({ user_id: tmpId, name, phone, created_at: todayISO(), token: '' });
+      // _created: the sheet's created_at has no time, so today's new customer
+      // ties with today's transactors and loses. Local ms breaks the tie (0.8).
+      db.users.push({ user_id: tmpId, name, phone, created_at: todayISO(), token: '', _created: Date.now() });
       enqueue('addUser', { data: { name, phone } }, tmpId);
       toast(`${name} added`);
     }
@@ -1492,15 +1735,9 @@ function init() {
   if (applyPassbookLink()) {
     // read-only mode: nothing else to wire
   } else {
-    const invited = applyInviteLink();
-    if (!config) {
-      show('connect');
-    } else {
-      show('home');
-      render();          // cached copy immediately
-      refresh(true);     // then sync in background (also drains the queue)
-      if (invited) toast('Connected to shared ledger ✓');
-    }
+    const invite = parseInviteLink();
+    if (invite) openInvite(invite);   // async: validates before it believes the link
+    else bootLedger();
   }
 
   // Ask the browser to never evict our storage (config, cache, queue, thumbs).
@@ -1578,13 +1815,15 @@ function openTxnForm(type, txn) {
   if (!txn) $('txn-amount').focus();
 }
 
-function openCustomerForm(id) {
+function openCustomerForm(id, prefillName) {
   disarmConfirm();   // …nor into another customer
   editingCustomerId = id;
   const u = id ? db.users.find((x) => String(x.user_id) === String(id)) : null;
   $('cust-dlg-title').textContent = u ? 'Edit customer' : 'New customer';
-  $('cust-input-name').value = u ? u.name : '';
+  $('cust-input-name').value = u ? u.name : (prefillName || '');
   $('cust-input-phone').value = u ? (u.phone || '') : '';
+  // no token yet (a queued tmp id, or a pre-v3 backend) = no passbook link
+  $('cust-passbook-wrap').hidden = !(u && passbookLink(u));
   $('cust-delete').hidden = !u;
   $('cust-delete').textContent = 'Delete';
   $('cust-error').hidden = true;

@@ -171,6 +171,8 @@ body {
 /* equalize box heights when a tall field (amount) shares the row */
 .field-row .field { display: flex; flex-direction: column; }
 .field-row .field input, .field-row .field .amt-input, .field-row .field .photo-row { flex: 1; }
+/* a help line under a field in a row must not be stretched by the grid */
+.field-row .field .field-help { flex: none; }
 /* one control height across the whole form */
 .field input, .field-amt .amt-input, .photo-row .btn { min-height: 48px; box-sizing: border-box; }
 .form-error { color: var(--red); font-size: 0.8rem; margin: 4px 0 10px; }
@@ -214,6 +216,21 @@ body {
 .or-rule::before, .or-rule::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
 
 .connect-foot { margin-top: 26px; font-size: 0.82rem; color: var(--text-3); }
+
+/* invite-link status/failure, above the card — the one place a merchant who
+   was sent a dead link finds out, in words they use (audit 0.3) */
+.connect-alert {
+  width: 100%;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--inset);
+  color: var(--text-2);
+  font-size: 0.9rem;
+  text-align: left;
+}
+.connect-alert.err { border-color: var(--red); color: var(--red); background: transparent; }
 
 /* entry reveal */
 .reveal { animation: rise 0.55s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
@@ -466,8 +483,10 @@ body {
 /* ---------- empty states ---------- */
 
 .empty { text-align: center; padding: 56px 20px; }
-.empty-title { font-size: 1.25rem; font-weight: 700; }
+.empty-title { font-size: 1.25rem; font-weight: 700; overflow-wrap: anywhere; }
 .empty-sub { margin-top: 8px; color: var(--text-2); font-size: 0.92rem; }
+/* the no-match search state carries the next action, not just an apology */
+.empty .btn { margin-top: 18px; max-width: 100%; overflow-wrap: anywhere; }
 
 /* ---------- dialogs ---------- */
 
@@ -549,6 +568,12 @@ body {
 .dir-btn + .dir-btn { border-left: 1px solid var(--border-strong); }
 .dir-gave[aria-pressed="true"] { background: var(--red-fill); color: var(--on-fill); }
 .dir-got[aria-pressed="true"] { background: var(--green-fill); color: var(--on-fill); }
+
+/* link buttons + their one-line warning: the safe per-customer link in the
+   customer dialog, the full-access one in Settings (audit 1.1) */
+#cust-passbook-wrap { margin-bottom: 14px; }
+#invite-wrap { margin: 4px 0 2px; }
+#cust-passbook-wrap .field-help, #invite-wrap .field-help { text-align: center; }
 
 .settings-conn { margin: 6px 0 4px; }
 .settings-conn summary {

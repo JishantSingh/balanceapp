@@ -35,7 +35,6 @@ test('invite link with a bad key must NOT claim success', async ({ page }) => {
   // UX-AUDIT 0.3 — today this shows "Connected ✓" + an empty ledger inviting
   // doomed entries. Fixed behavior: validate before declaring success, land
   // on a failure state, never the happy home screen.
-  test.fail(true, 'audit 0.3: invite link never validates the key');
   const backend = createBackend(seedLedger());
   await backend.install(page);
   await page.goto('/' + inviteHash(backend, 'rotated-away'));
@@ -47,7 +46,6 @@ test('invite link with a bad key must NOT claim success', async ({ page }) => {
 test('switching ledgers must not replay the old queue into the new sheet', async ({ page }) => {
   // UX-AUDIT 0.3 — today ledger A's unsynced queue survives the switch and
   // drains into ledger B's sheet.
-  test.fail(true, 'audit 0.3: connection switch does not clear cache/queue');
   const a = createBackend(seedLedger());
   await openLedger(page, a);
   await page.locator('.customer-row', { hasText: 'Ramu Halwai' }).click();
