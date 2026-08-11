@@ -297,6 +297,20 @@
       <button type="button" id="btn-leave-demo" class="btn btn-ink btn-wide">Apna asli khata jodein</button>
       <small class="field-help">Demo phone par bacha rahega — jab chahein wapas khol lein.</small>
     </div>
+    <!-- Sprint 3 "PIN Suraksha". The App PIN replaces the double-tap on the six
+         owner-level actions; the Master PIN that authorizes changing it lives
+         only in the merchant's own Script Properties and is never sent back. -->
+    <div id="suraksha">
+      <div class="suraksha-head">🔒 Suraksha</div>
+      <p id="suraksha-note" class="suraksha-note"></p>
+      <div class="suraksha-actions">
+        <button type="button" id="btn-pin-set" class="btn btn-ghost" hidden>App PIN lagayein</button>
+        <button type="button" id="btn-pin-change" class="btn btn-ghost" hidden>PIN badlein</button>
+        <button type="button" id="btn-pin-remove" class="btn btn-danger-ghost" hidden>PIN hatayein</button>
+      </div>
+    </div>
+    <!-- backlog #4.3: the khata IS the merchant's own sheet — one tap to see it -->
+    <a id="btn-sheet" class="btn btn-ghost btn-wide" target="_blank" rel="noopener" hidden>📄 Meri Google Sheet kholein</a>
     <details class="settings-conn">
       <summary>Connection</summary>
       <label class="field"><span>Apps Script URL</span><input id="set-url" type="url" autocomplete="off"></label>
@@ -335,6 +349,39 @@
       <button type="button" id="photo-remove" class="btn btn-danger-ghost" hidden>Photo hatayein</button>
       <span class="flex-spring"></span>
       <button type="submit" class="btn btn-ghost">Close</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ============ PIN PAD (Suraksha) ============ -->
+<!-- One pad for every question: verifying the App PIN before an owner-level
+     action, and the two steps of setting/changing it. The title names the
+     operation, so a pad can never appear without saying what it is for. -->
+<dialog id="dlg-pin" class="sheet">
+  <form id="form-pin" method="dialog" novalidate>
+    <div id="pin-title" class="sheet-title">PIN daalein</div>
+    <p id="pin-sub" class="pin-sub" hidden></p>
+    <div id="pin-dots" class="pin-dots" aria-hidden="true"></div>
+    <p id="pin-error" class="pin-error" hidden></p>
+    <p id="pin-lock" class="pin-lock" hidden></p>
+    <div id="pin-grid" class="pin-grid">
+      <button type="button" class="pin-key" data-k="1">1</button>
+      <button type="button" class="pin-key" data-k="2">2</button>
+      <button type="button" class="pin-key" data-k="3">3</button>
+      <button type="button" class="pin-key" data-k="4">4</button>
+      <button type="button" class="pin-key" data-k="5">5</button>
+      <button type="button" class="pin-key" data-k="6">6</button>
+      <button type="button" class="pin-key" data-k="7">7</button>
+      <button type="button" class="pin-key" data-k="8">8</button>
+      <button type="button" class="pin-key" data-k="9">9</button>
+      <span class="pin-key pin-blank" aria-hidden="true"></span>
+      <button type="button" class="pin-key" data-k="0">0</button>
+      <button type="button" class="pin-key" data-k="back" aria-label="Ek ank mitayein">⌫</button>
+    </div>
+    <div class="sheet-actions">
+      <button type="button" id="pin-forgot" class="btn btn-ghost pin-forgot" hidden>PIN bhool gaye?</button>
+      <span class="flex-spring"></span>
+      <button type="button" class="btn btn-ghost" data-close>Cancel</button>
     </div>
   </form>
 </dialog>

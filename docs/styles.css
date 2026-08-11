@@ -575,6 +575,17 @@ body {
 #invite-wrap { margin: 4px 0 2px; }
 #cust-passbook-wrap .field-help, #invite-wrap .field-help { text-align: center; }
 
+/* ---------- Suraksha: the App PIN block in Settings ---------- */
+
+#suraksha { margin: 12px 0 4px; padding-top: 12px; border-top: 1px solid var(--border); }
+.suraksha-head { font-size: 0.92rem; font-weight: 700; margin-bottom: 4px; }
+.suraksha-note { font-size: 0.78rem; color: var(--text-2); margin-bottom: 10px; }
+/* a pre-Suraksha backend has nothing to offer yet — say so, quietly */
+.suraksha-note.off { color: var(--text-3); }
+.suraksha-actions { display: flex; gap: 8px; }
+.suraksha-actions .btn { flex: 1; padding: 12px 10px; }
+#btn-sheet { margin: 10px 0 2px; text-decoration: none; }
+
 .settings-conn { margin: 6px 0 4px; }
 .settings-conn summary {
   font-size: 0.78rem; font-weight: 600;
@@ -697,7 +708,8 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .reveal, .customer-row, .txn-row, .sheet form, .toast, .update-bar { animation: none; }
+  .reveal, .customer-row, .txn-row, .sheet form, .toast, .update-bar,
+  .pin-dots.shake { animation: none; }
 }
 
 /* ---------- pending-sync chip (offline write queue) ---------- */
@@ -767,6 +779,55 @@ body {
   border: 1px solid var(--border);
   object-fit: contain;
 }
+
+/* ---------- PIN pad (Suraksha) ---------- */
+
+/* Thumb-sized keys on a cheap phone held in one hand: 56px minimum, tabular
+   digits so the grid never twitches, and no digit ever leaves this sheet. */
+.pin-sub { font-size: 0.8rem; color: var(--text-2); text-align: center; margin: -6px 0 12px; }
+
+.pin-dots { display: flex; justify-content: center; gap: 14px; margin: 4px 0 14px; }
+.pin-dot {
+  width: 13px; height: 13px;
+  border: 2px solid var(--border-strong); border-radius: 50%;
+  background: transparent;
+}
+.pin-dot.on { background: var(--blue); border-color: var(--blue); }
+.pin-dots.shake { animation: pinShake 0.4s ease both; }
+@keyframes pinShake {
+  10%, 90% { transform: translateX(-2px); }
+  20%, 80% { transform: translateX(4px); }
+  30%, 50%, 70% { transform: translateX(-7px); }
+  40%, 60% { transform: translateX(7px); }
+}
+
+.pin-error { color: var(--red); font-size: 0.82rem; text-align: center; margin-bottom: 10px; }
+/* the cooldown notice: amber, like the pending chip — a wait, not a failure */
+.pin-lock {
+  text-align: center;
+  font-size: 0.8rem; font-weight: 600;
+  color: #7a4b00; background: #ffe6b0;
+  border: 1px solid #f0b429; border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pin-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.pin-key {
+  appearance: none; -webkit-appearance: none;
+  min-height: 56px;
+  border: 1px solid var(--border-strong); border-radius: 10px;
+  background: var(--surface); color: var(--text);
+  font-family: var(--sans); font-size: 1.35rem; font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.pin-key:active { background: var(--inset); }
+.pin-key:disabled { opacity: 0.4; cursor: default; }
+.pin-blank { border: 0; background: none; visibility: hidden; }
+/* the way out for someone who is locked out — never the loudest thing here */
+.pin-forgot { font-weight: 500; font-size: 0.8rem; padding: 12px 10px; }
 
 /* ---------- passbook (read-only customer view) ---------- */
 

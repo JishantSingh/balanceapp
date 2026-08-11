@@ -17,6 +17,12 @@ const LS_CACHE = 'bahi.cache';
 const LS_DEMO = 'bahi.demo';
 const LS_QUEUE = 'bahi.queue';
 const LS_FAILED = 'bahi.failed';
+const LS_PINLOCK = 'bahi.pinlock';   // PIN attempt limiter — counters only, never digits
+
+/* A passbook link the merchant revoked keeps this sentinel in the token cell:
+   a blank cell would simply be re-issued by the backend's backfill. It is a
+   dead token, so no link may ever be built from it. Mirrors Code.gs. */
+const REVOKED_TOKEN = 'off';
 
 const DEFAULT_TEMPLATE =
   'Namaste {name} ji 🙏\n' +
@@ -26,6 +32,9 @@ const DEFAULT_TEMPLATE =
   'Dhanyavaad!';
 
 let config = loadJSON(LS_CONFIG) || null;
+// the cached ledger: users + transactions, plus whatever the last `list`
+// carried about the ledger itself (pin = salt+hash for offline PIN checks,
+// sheetUrl). Both are v7 additions and are simply absent on older backends.
 let db = loadJSON(LS_CACHE) || { users: [], transactions: [] };
 let queue = loadQueue();
 let failed = loadJSON(LS_FAILED) || [];   // writes the server refused (rolled back locally)
@@ -356,7 +365,15 @@ function normalizeData(data) {
   const transactions = (data && data.transactions) || [];
   users.forEach((u) => { u.user_id = str(u.user_id); });
   transactions.forEach((t) => { t.id = str(t.id); t.user_name = str(t.user_name); });
-  return { users, transactions };
+  const out = { users, transactions };
+  /* v7 ledger facts. A pre-Suraksha backend omits both keys entirely, and the
+     difference between "absent" and "null" is the whole feature detection:
+     absent = this backend cannot do PINs (offer an update, no buttons),
+     null = it can and none is set. Copied only when present, so `undefined`
+     survives the round trip through the cache (JSON drops the key). */
+  if (data && 'pin' in data) out.pin = data.pin;
+  if (data && 'sheetUrl' in data) out.sheetUrl = data.sheetUrl;
+  return out;
 }
 
 // A slow list answer must never overwrite a newer one (or a ledger that has
@@ -372,7 +389,10 @@ async function refresh(silent) {
     // stale answer, another ledger, or a write made while we waited: keep local
     if (gen !== refreshGen || ledger !== ledgerGen || queue.length) { render(); return; }
     const fresh = normalizeData(data);
-    db = { users: keepLocalMeta(fresh.users), transactions: fresh.transactions };
+    db = {
+      users: keepLocalMeta(fresh.users), transactions: fresh.transactions,
+      pin: fresh.pin, sheetUrl: fresh.sheetUrl,
+    };
     saveCache();
     render();
   } catch (err) {
@@ -848,6 +868,9 @@ function render() {
   renderHome();
   if (currentCustomerId) renderCustomer();
   updateChips();
+  // a sync can land while Settings is open (or right after it opened on a
+  // cache older than this feature) — the PIN block must not go stale
+  renderSuraksha();
 }
 
 function renderHome() {
@@ -1102,6 +1125,10 @@ function wipeLedgerData() {
   currentCustomerId = null;
   editingTxnId = null;
   editingCustomerId = null;
+  // the grace window was bought with the OLD khata's PIN — it may not spend
+  // itself on this one's first delete (the limiter is deliberately kept: it
+  // counts guesses on this device, and a wipe is no reason to forgive them)
+  pinOkUntil = 0;
   setOffline(false);   // the old ledger's last network state says nothing about this one
   setAuthBad(false);
 }
@@ -1149,7 +1176,10 @@ async function connectTo(invite) {
   // so a key refresh must not blank the entries that are still waiting.
   if (!queue.length) {
     const fresh = normalizeData(data);
-    db = { users: keepLocalMeta(fresh.users), transactions: fresh.transactions };
+    db = {
+      users: keepLocalMeta(fresh.users), transactions: fresh.transactions,
+      pin: fresh.pin, sheetUrl: fresh.sheetUrl,
+    };
     saveCache();
   }
   show('home');
@@ -1327,7 +1357,10 @@ function passbookLink(u) {
   if (config && config.demo) {
     return location.origin + location.pathname + '#p=' + b64url({ d: u.user_id });
   }
-  if (!u.token) return '';
+  // no token yet (pre-v3 backend, or a queued tmp customer) — and a REVOKED
+  // one is not a token at all: the passbook action refuses it, so offering the
+  // link would hand out a dead link that reads as a working one.
+  if (!u.token || String(u.token) === REVOKED_TOKEN) return '';
   return location.origin + location.pathname + '#p=' + b64url({ u: config.url, t: u.token });
 }
 
@@ -1616,6 +1649,292 @@ function armConfirm(btn, token, warn) {
   return false;
 }
 
+// ---------------------------------------------------------------- PIN Suraksha
+
+/* Two tiers, both owned by the merchant's own backend (Sprint 3):
+   - the Master PIN lives only in their Script Properties. It authorizes
+     setting/changing/removing the App PIN, is checked server-side, and is
+     never returned by any action.
+   - the App PIN is 4 digits, opt-in. The backend ships salt+hash in `list`,
+     so every device sharing the ledger verifies it OFFLINE and the digits
+     themselves never leave the phone they are typed on — not to the sheet,
+     not to storage, not into a toast or a log line.
+
+   Threat model: casual misuse on a shared shop phone (staff, family). Anyone
+   who can read `list` can brute-force 10^4 hashes — this is a lock on a
+   drawer, not a safe, and no string in this app may claim otherwise. */
+
+const PIN_GRACE_MS = 2 * 60 * 1000;   // one correct PIN covers a short burst of work
+const PIN_FAIL_LIMIT = 3;
+const PIN_COOLDOWN_MS = 30000;        // doubles every round
+
+// A pre-Suraksha backend omits `pin` from `list` entirely; a v7 one with no
+// PIN set sends null. "Cannot" and "not switched on" are different answers.
+function pinSupported() { return db.pin !== undefined; }
+function pinConfigured() { return !!(db.pin && db.pin.salt && db.pin.hash); }
+
+let pinOkUntil = 0;   // grace window; cleared when the app goes to the background
+
+async function sha256Hex(text) {
+  const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Same recipe as Code.gs: sha256(salt + ':' + pin), lowercase hex.
+async function pinMatches(pin) {
+  if (!pinConfigured()) return false;
+  return (await sha256Hex(db.pin.salt + ':' + pin)) === String(db.pin.hash).toLowerCase();
+}
+
+/* The limiter lives in localStorage so a reload cannot shake it off, and it
+   holds counters only. 3 wrong in a row → a cooldown that doubles each round;
+   one correct entry forgives the whole run. */
+function pinLock() {
+  const l = loadJSON(LS_PINLOCK);
+  return (l && typeof l === 'object') ? l : { fails: 0, until: 0, round: 0 };
+}
+function pinLockLeft() { return Math.max(0, (pinLock().until || 0) - Date.now()); }
+
+function pinPassed() {
+  try { localStorage.removeItem(LS_PINLOCK); } catch (e) { /* nothing to forgive then */ }
+  pinOkUntil = Date.now() + PIN_GRACE_MS;
+}
+
+function pinFailed() {
+  const l = pinLock();
+  l.fails = (l.fails || 0) + 1;
+  if (l.fails >= PIN_FAIL_LIMIT) {
+    l.round = (l.round || 0) + 1;
+    l.fails = 0;
+    l.until = Date.now() + PIN_COOLDOWN_MS * Math.pow(2, l.round - 1);
+  }
+  // A full phone must not hand out unlimited guesses, but it must not throw
+  // into the pad either — the in-memory verdict below is still enforced.
+  try { saveJSON(LS_PINLOCK, l); } catch (e) { /* best effort */ }
+}
+
+/* ---------- the pad ----------
+
+   One promise per question. `check(value)` decides what a full entry means:
+   return true to accept (the sheet closes and the promise resolves true), or
+   a string to reject with that message — shake, clear the dots, stay open.
+   The typed digits live in `pinEntry` and nowhere else. */
+
+let pinAsk = null;    // the question on screen: {len, check, keep, resolve, busy}
+let pinEntry = '';
+let pinTimer = null;  // cooldown countdown
+
+function askPin(opts) {
+  return new Promise((resolve) => {
+    const dlg = $('dlg-pin');
+    pinAsk = { len: opts.len || 4, check: opts.check, keep: !!opts.keep, resolve, busy: false };
+    pinEntry = '';
+    $('pin-title').textContent = opts.title;
+    const sub = $('pin-sub');
+    sub.textContent = opts.sub || '';
+    sub.hidden = !opts.sub;
+    $('pin-forgot').hidden = !opts.forgot;
+    pinError('');
+    buildPinDots(pinAsk.len);
+    paintPinDots();
+    paintPinLock();
+    /* A chained step re-arms the sheet that is already up. Closing and
+       reopening it would replay the sheet animation between steps and, worse,
+       race the previous close event against the new showModal(). */
+    if (!dlg.open) showSheet(dlg);
+  });
+}
+
+function buildPinDots(len) {
+  $('pin-dots').innerHTML = new Array(len).fill('<span class="pin-dot"></span>').join('');
+}
+
+function paintPinDots() {
+  const dots = $('pin-dots').children;
+  for (let i = 0; i < dots.length; i++) dots[i].classList.toggle('on', i < pinEntry.length);
+}
+
+function shakePin() {
+  const el = $('pin-dots');
+  el.classList.remove('shake');
+  void el.offsetWidth;   // reflow, so the animation actually starts over
+  el.classList.add('shake');
+}
+
+function pinError(msg) {
+  const el = $('pin-error');
+  el.textContent = msg || '';
+  el.hidden = !msg;
+}
+
+/* Cooldown: the grid goes dead and says when it comes back, ticking live so
+   the wait is visibly finite. "PIN bhool gaye?" stays alive throughout — a
+   locked-out owner still has to have a way in. */
+function paintPinLock() {
+  const left = pinLockLeft();
+  const el = $('pin-lock');
+  el.hidden = left <= 0;
+  if (left > 0) el.textContent = 'Phir se koshish karein ' + Math.ceil(left / 1000) + 's mein';
+  $('pin-grid').querySelectorAll('button').forEach((b) => { b.disabled = left > 0; });
+  if (left > 0 && !pinTimer) pinTimer = setInterval(paintPinLock, 250);
+  if (left <= 0 && pinTimer) { clearInterval(pinTimer); pinTimer = null; }
+}
+
+function pinKey(k) {
+  if (!pinAsk || pinAsk.busy || pinLockLeft() > 0) return;
+  if (k === 'back') { pinEntry = pinEntry.slice(0, -1); paintPinDots(); return; }
+  if (pinEntry.length >= pinAsk.len) return;
+  pinEntry += k;
+  pinError('');
+  paintPinDots();
+  if (pinEntry.length === pinAsk.len) submitPin();   // no OK button: full is done
+}
+
+async function submitPin() {
+  const ask = pinAsk;
+  ask.busy = true;
+  let verdict;
+  try { verdict = await ask.check(pinEntry); }
+  catch (err) { verdict = (err && err.message) || 'Kuch galat ho gaya'; }
+  if (pinAsk !== ask) return;   // closed, or re-armed, while we were checking
+  ask.busy = false;
+  if (verdict === true) {
+    pinAsk = null;              // the close event below now has nothing to reject
+    pinEntry = '';
+    if (!ask.keep) $('dlg-pin').close();
+    ask.resolve(true);
+    return;
+  }
+  pinEntry = '';
+  paintPinDots();
+  shakePin();
+  pinError(typeof verdict === 'string' && verdict ? verdict : 'PIN galat hai');
+  paintPinLock();
+}
+
+function closePinAsk() {
+  const ask = pinAsk;
+  pinAsk = null;
+  pinEntry = '';
+  if (pinTimer) { clearInterval(pinTimer); pinTimer = null; }
+  if (ask) ask.resolve(false);
+}
+
+/* ---------- gates ---------- */
+
+/* The one thing every gated action asks. True = go ahead: no PIN is
+   configured, we are still inside the grace window, or the merchant just
+   typed the right one. A cancel is false, never a rejection. */
+function requirePin(label) {
+  if (!pinConfigured()) return Promise.resolve(true);
+  if (Date.now() < pinOkUntil) return Promise.resolve(true);
+  return askPin({
+    title: label,
+    len: 4,
+    forgot: true,
+    check: async (value) => {
+      if (!(await pinMatches(value))) { pinFailed(); return 'PIN galat hai'; }
+      pinPassed();
+      return true;
+    },
+  });
+}
+
+/* The six owner-level actions run through here. With an App PIN configured
+   the PIN *replaces* the double-tap; with no PIN the call site's own
+   armConfirm decides, exactly as it did before Suraksha. */
+function gated(label, arm, fn) {
+  if (!pinConfigured()) { if (arm()) fn(); return; }
+  requirePin(label).then((ok) => { if (ok) fn(); });
+}
+
+/* ---------- set / change / remove ---------- */
+
+/* The salt is minted server-side, so the only way to learn the new PIN state
+   is to ask. refresh() is the normal path but it deliberately stands down
+   while unsynced writes exist — and the PIN state has to land either way. */
+async function syncPinState() {
+  const ledger = ledgerGen;
+  const data = await api('list');
+  if (ledger !== ledgerGen) return;   // another khata now — not ours to apply
+  db.pin = data.pin;
+  db.sheetUrl = data.sheetUrl;
+  saveCache();
+}
+
+/* Master PIN first, then the new PIN twice — a typo here locks the whole shop
+   out of its own delete button. Both values live in this closure and die with
+   it. This is the one PIN path that needs the network: the Master PIN is only
+   ever checked by the merchant's own backend. */
+async function runPinFlow(kind) {   // 'set' | 'change' | 'remove'
+  const removing = kind === 'remove';
+  let master = '';
+  const gotMaster = await askPin({
+    title: removing ? 'PIN hatane ke liye Master PIN' : 'Master PIN daalein',
+    sub: 'Apps Script → Script Properties me milega',
+    len: 6,
+    keep: !removing,
+    check: (value) => { master = value; return true; },
+  });
+  if (!gotMaster) return;
+
+  let fresh = '';
+  if (!removing) {
+    const first = await askPin({
+      title: 'Naya App PIN', sub: '4 ank', len: 4, keep: true,
+      check: (value) => { fresh = value; return true; },
+    });
+    if (!first) return;
+    const again = await askPin({
+      title: 'Naya PIN dobara daalein', len: 4,
+      check: (value) => (value === fresh ? true : 'Dono PIN alag hain — dobara koshish karein'),
+    });
+    if (!again) return;
+  }
+
+  try {
+    await api('setTxnPin', { admin: master, pin: removing ? '' : fresh });
+  } catch (err) {
+    /* Branch on WHICH failure, never on its words. A dead network is not a
+       wrong Master PIN, and the backend's message is not ours to parse. */
+    if (err instanceof TypeError) toast('Internet chahiye — PIN badalne ke liye', true);
+    else if (err.rejected) toast('Master PIN galat hai — Apps Script → Script Properties me milega', true);
+    else toast('PIN nahi badla: ' + err.message, true);
+    return;
+  }
+  pinOkUntil = 0;   // a changed PIN starts a fresh window, never inherits one
+  try { localStorage.removeItem(LS_PINLOCK); } catch (e) { /* best effort */ }
+  try { await syncPinState(); } catch (e) { /* the sheet has it; this device catches up on the next sync */ }
+  renderSuraksha();
+  toast(removing ? 'App PIN hata diya' : 'App PIN lag gaya ✓');
+}
+
+/* The Settings block. Three honest states: this backend cannot do PINs yet,
+   it can and none is set, or one is set. */
+function renderSuraksha() {
+  const demo = !!(config && config.demo);
+  const supported = pinSupported();
+  const on = pinConfigured();
+
+  // the demo has no backend to hold a Master PIN — nothing here can work
+  $('suraksha').hidden = demo;
+  const note = $('suraksha-note');
+  note.className = 'suraksha-note' + (supported ? '' : ' off');
+  note.textContent = !supported
+    ? 'Backend update chahiye — PIN ke liye'
+    : on
+      ? 'App PIN laga hai ✓'
+      : 'Delete jaise kaam PIN ke bina nahi honge — shared phone ke liye.';
+  $('btn-pin-set').hidden = !supported || on;
+  $('btn-pin-change').hidden = !supported || !on;
+  $('btn-pin-remove').hidden = !supported || !on;
+
+  const sheet = $('btn-sheet');
+  const url = (!demo && db.sheetUrl) || '';
+  sheet.hidden = !url;
+  if (url) sheet.href = url;
+}
+
 // ---------------------------------------------------------------- wiring
 
 function init() {
@@ -1710,7 +2029,36 @@ function init() {
   });
   $('dlg-switch').addEventListener('close', () => { pendingInvite = null; });
 
+  // PIN pad
+  $('pin-grid').addEventListener('click', (e) => {
+    const key = e.target.closest('.pin-key');
+    if (key && key.dataset.k) pinKey(key.dataset.k);
+  });
+  // typing works too (a phone with a keyboard, and every desktop)
+  $('dlg-pin').addEventListener('keydown', (e) => {
+    if (!pinAsk) return;
+    if (/^[0-9]$/.test(e.key)) { e.preventDefault(); pinKey(e.key); }
+    else if (e.key === 'Backspace') { e.preventDefault(); pinKey('back'); }
+  });
+  // Cancel, Esc and the backdrop all land here: the question is answered "no".
+  $('dlg-pin').addEventListener('close', () => {
+    // a close event left over from a step that has already re-opened the sheet
+    if ($('dlg-pin').open) return;
+    closePinAsk();
+  });
+  /* Forgotten PIN: the App PIN cannot be recovered, only replaced — and only
+     with the Master PIN. The gated action is abandoned (answered "no"); the
+     reset flow opens in its place. */
+  $('pin-forgot').addEventListener('click', () => {
+    closePinAsk();
+    $('dlg-pin').close();
+    runPinFlow('change');
+  });
+
   // settings
+  $('btn-pin-set').addEventListener('click', () => runPinFlow('set'));
+  $('btn-pin-change').addEventListener('click', () => runPinFlow('change'));
+  $('btn-pin-remove').addEventListener('click', () => runPinFlow('remove'));
   $('btn-settings').addEventListener('click', () => {
     $('set-merchant').value = config.merchant || '';
     $('set-currency').value = config.currency || '₹';
@@ -1725,7 +2073,18 @@ function init() {
     conn.hidden = !!config.demo;
     $('settings-demo').hidden = !config.demo;
     $('invite-wrap').hidden = !!config.demo || !config.url;
+    renderSuraksha();
     showSheet($('dlg-settings'));
+  });
+  /* Gate 6 — the Connection section holds the URL, the key and Disconnect:
+     opening it is itself an owner-level act. The <details> toggle is
+     intercepted rather than replaced, so with no PIN it behaves exactly as it
+     always did (and closing it never asks). */
+  document.querySelector('.settings-conn summary').addEventListener('click', (e) => {
+    const conn = document.querySelector('.settings-conn');
+    if (conn.open || !pinConfigured()) return;
+    e.preventDefault();
+    requirePin('Connection kholne ke liye PIN').then((ok) => { if (ok) conn.open = true; });
   });
   // Leave the demo without destroying it: the sample khata stays on the phone
   // so "Try the demo" comes back to the same numbers.
@@ -1748,11 +2107,15 @@ function init() {
   // The dangerous link. The warning lands on the *first* tap — before the copy
   // exists — not as a 3.2s toast after it is already in the clipboard (1.1).
   $('btn-invite').addEventListener('click', (e) => {
-    if (!armConfirm(e.currentTarget, 'invite-copy',
-      'Is link se poora khata khul jayega — sirf apne bharose walon ko bhejein')) return;
-    copyText(inviteLink())
-      .then(() => toast('Link copy ho gaya — sirf bharose wale ko bhejein'))
-      .catch(() => toast('Copy nahi ho paya', true));
+    const btn = e.currentTarget;
+    gated('Link copy karne ke liye PIN',
+      () => armConfirm(btn, 'invite-copy',
+        'Is link se poora khata khul jayega — sirf apne bharose walon ko bhejein'),
+      () => {
+        copyText(inviteLink())
+          .then(() => toast('Link copy ho gaya — sirf bharose wale ko bhejein'))
+          .catch(() => toast('Copy nahi ho paya', true));
+      });
   });
   $('form-settings').addEventListener('submit', () => {
     config.merchant = $('set-merchant').value.trim();
@@ -1780,13 +2143,15 @@ function init() {
     setTimeout(() => openInvite(switchTo), 0);
   });
   $('btn-disconnect').addEventListener('click', (e) => {
-    if (!armConfirm(e.currentTarget, 'disconnect')) return;
-    const unsynced = queue.length + failed.length;
-    if (unsynced && !window.confirm(unsynced + ' unsynced change(s) will be lost. Disconnect anyway?')) return;
-    // thumbs are bill photos — a "cleared" device must not keep them (audit 0.9)
-    [LS_CONFIG, LS_CACHE, LS_DEMO, LS_QUEUE, LS_FAILED, LS_THUMBS]
-      .forEach((k) => localStorage.removeItem(k));
-    location.reload();
+    const btn = e.currentTarget;
+    gated('Device hatane ke liye PIN', () => armConfirm(btn, 'disconnect'), () => {
+      const unsynced = queue.length + failed.length;
+      if (unsynced && !window.confirm(unsynced + ' unsynced change(s) will be lost. Disconnect anyway?')) return;
+      // thumbs are bill photos — a "cleared" device must not keep them (audit 0.9)
+      [LS_CONFIG, LS_CACHE, LS_DEMO, LS_QUEUE, LS_FAILED, LS_THUMBS]
+        .forEach((k) => localStorage.removeItem(k));
+      location.reload();
+    });
   });
 
   // customer screen
@@ -1831,11 +2196,13 @@ function init() {
   });
   $('txn-photo-view').addEventListener('click', viewCurrentPhoto);
   $('photo-remove').addEventListener('click', (e) => {
-    if (!armConfirm(e.currentTarget, 'del-photo')) return;
-    photoState = { mode: 'removed', b64: null, id: null };
-    setPhotoUI();
-    $('dlg-photo').close();
-    toast('Photo hata di — entry save karein');
+    const btn = e.currentTarget;
+    gated('Photo hatane ke liye PIN', () => armConfirm(btn, 'del-photo'), () => {
+      photoState = { mode: 'removed', b64: null, id: null };
+      setPhotoUI();
+      $('dlg-photo').close();
+      toast('Photo hata di — entry save karein');
+    });
   });
 
   // direction toggle (edit only)
@@ -1901,49 +2268,52 @@ function init() {
     saveReadback(payload);
   });
   $('txn-delete').addEventListener('click', (e) => {
-    if (!armConfirm(e.currentTarget, 'del-txn:' + editingTxnId)) return;
-    $('dlg-txn').close();
-    const id = editingTxnId;
-    const pre = clone(db.transactions.find((x) => String(x.id) === String(id)));
-    if (!pre) { toast('Yeh entry ab yahan nahi hai', true); return; }
-    db.transactions = db.transactions.filter((x) => String(x.id) !== String(id));
-    // an add that is already on the wire is NOT droppable — the row is about
-    // to exist in the sheet, so this becomes a real deleteTxn (its payload id
-    // is remapped to the server id when the add lands)
-    const queuedAdd = isTmp(id) && queuedAddFor(id);
-    const ledger = ledgerGen;
-    let undoDelete;
-    if (queuedAdd) {
-      // Never reached the sheet — dropping its queued add *is* the delete, so
-      // undo is simply putting that item (and the row) back.
-      const at = queue.indexOf(queuedAdd);
-      dropQueued(queuedAdd);
-      saveQueue();
-      undoDelete = () => {
-        if (ledger !== ledgerGen) return;   // different khata now — nothing to put back
-        queue.splice(Math.min(at, queue.length), 0, queuedAdd);
+    const btn = e.currentTarget;
+    const gateId = editingTxnId;   // named before any await can move underneath us
+    gated('Entry hatane ke liye PIN', () => armConfirm(btn, 'del-txn:' + gateId), () => {
+      $('dlg-txn').close();
+      const id = editingTxnId;
+      const pre = clone(db.transactions.find((x) => String(x.id) === String(id)));
+      if (!pre) { toast('Yeh entry ab yahan nahi hai', true); return; }
+      db.transactions = db.transactions.filter((x) => String(x.id) !== String(id));
+      // an add that is already on the wire is NOT droppable — the row is about
+      // to exist in the sheet, so this becomes a real deleteTxn (its payload id
+      // is remapped to the server id when the add lands)
+      const queuedAdd = isTmp(id) && queuedAddFor(id);
+      const ledger = ledgerGen;
+      let undoDelete;
+      if (queuedAdd) {
+        // Never reached the sheet — dropping its queued add *is* the delete, so
+        // undo is simply putting that item (and the row) back.
+        const at = queue.indexOf(queuedAdd);
+        dropQueued(queuedAdd);
         saveQueue();
-        restoreTxn(pre);
-        processQueue();
-      };
-    } else {
-      enqueue('deleteTxn', { id }, null, pre ? { type: 'txn', txn: pre } : null);
-      const queued = queue[queue.length - 1];
-      const del = queued && queued.action === 'deleteTxn' && queued.payload.id === id ? queued : null;
-      undoDelete = () => {
-        if (ledger !== ledgerGen) return;
-        const i = del && !del.inflight ? queue.indexOf(del) : -1;
-        if (i >= 0) { queue.splice(i, 1); saveQueue(); restoreTxn(pre); }   // still queued: purely local
-        else readdTxn(pre);                                                 // already gone upstream: re-create
-      };
-    }
-    saveCache();
-    render();
-    if (pre) {
-      showToast('Entry hata di ·', {
-        action: 'WAPAS LAYEIN', onAction: undoDelete, ms: 7000,
-      });
-    }
+        undoDelete = () => {
+          if (ledger !== ledgerGen) return;   // different khata now — nothing to put back
+          queue.splice(Math.min(at, queue.length), 0, queuedAdd);
+          saveQueue();
+          restoreTxn(pre);
+          processQueue();
+        };
+      } else {
+        enqueue('deleteTxn', { id }, null, pre ? { type: 'txn', txn: pre } : null);
+        const queued = queue[queue.length - 1];
+        const del = queued && queued.action === 'deleteTxn' && queued.payload.id === id ? queued : null;
+        undoDelete = () => {
+          if (ledger !== ledgerGen) return;
+          const i = del && !del.inflight ? queue.indexOf(del) : -1;
+          if (i >= 0) { queue.splice(i, 1); saveQueue(); restoreTxn(pre); }   // still queued: purely local
+          else readdTxn(pre);                                                 // already gone upstream: re-create
+        };
+      }
+      saveCache();
+      render();
+      if (pre) {
+        showToast('Entry hata di ·', {
+          action: 'WAPAS LAYEIN', onAction: undoDelete, ms: 7000,
+        });
+      }
+    });
   });
 
   // customer dialog
@@ -2014,30 +2384,35 @@ function init() {
     render();
   });
   $('cust-delete').addEventListener('click', (e) => {
-    if (!armConfirm(e.currentTarget, 'del-cust:' + editingCustomerId,
-      'Dobara tap — is customer ki saari entry mit jayengi')) return;
-    $('dlg-customer').close();
-    const id = editingCustomerId;
-    // pre-image for rollback: the customer AND every entry that goes with them
-    const preUser = clone(db.users.find((x) => String(x.user_id) === String(id)));
-    const preTxns = clone(db.transactions.filter((x) => String(x.user_name) === String(id)));
-    db.users = db.users.filter((x) => String(x.user_id) !== String(id));
-    db.transactions = db.transactions.filter((x) => String(x.user_name) !== String(id));
-    const queuedAdd = isTmp(id) && queuedAddFor(id);
-    if (queuedAdd) {
-      // Never reached the server — drop its add and any queued entries for it.
-      // An item already on the wire is left alone: it is going to land, and
-      // the deleteUser/deleteTxn behind it is what undoes it.
-      queue = queue.filter((item) => item.inflight || (item !== queuedAdd &&
-        !(item.payload && item.payload.data && item.payload.data.user_id === id)));
-      saveQueue();
-    } else {
-      enqueue('deleteUser', { id }, null,
-        preUser ? { type: 'user', user: preUser, txns: preTxns } : null);
-    }
-    saveCache();
-    goHome();
-    toast('Customer deleted');
+    const btn = e.currentTarget;
+    const gateId = editingCustomerId;
+    gated('Customer hatane ke liye PIN',
+      () => armConfirm(btn, 'del-cust:' + gateId,
+        'Dobara tap — is customer ki saari entry mit jayengi'),
+      () => {
+        $('dlg-customer').close();
+        const id = editingCustomerId;
+        // pre-image for rollback: the customer AND every entry that goes with them
+        const preUser = clone(db.users.find((x) => String(x.user_id) === String(id)));
+        const preTxns = clone(db.transactions.filter((x) => String(x.user_name) === String(id)));
+        db.users = db.users.filter((x) => String(x.user_id) !== String(id));
+        db.transactions = db.transactions.filter((x) => String(x.user_name) !== String(id));
+        const queuedAdd = isTmp(id) && queuedAddFor(id);
+        if (queuedAdd) {
+          // Never reached the server — drop its add and any queued entries for it.
+          // An item already on the wire is left alone: it is going to land, and
+          // the deleteUser/deleteTxn behind it is what undoes it.
+          queue = queue.filter((item) => item.inflight || (item !== queuedAdd &&
+            !(item.payload && item.payload.data && item.payload.data.user_id === id)));
+          saveQueue();
+        } else {
+          enqueue('deleteUser', { id }, null,
+            preUser ? { type: 'user', user: preUser, txns: preTxns } : null);
+        }
+        saveCache();
+        goHome();
+        toast('Customer deleted');
+      });
   });
 
   // generic dialog close buttons
@@ -2057,6 +2432,9 @@ function init() {
   $('update-dismiss').addEventListener('click', () => topHide($('update-bar')));
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && updateWaiting) showUpdateBar();
+    // The app went to the background — the phone is on the counter again, and
+    // the PIN's grace window has no business surviving that.
+    if (document.visibilityState === 'hidden') pinOkUntil = 0;
   });
 
   // resync when network returns
