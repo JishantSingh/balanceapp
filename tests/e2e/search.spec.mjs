@@ -18,9 +18,20 @@ test('a no-match search must show a next action, not a blank screen', async ({ p
   // no-results state (#search-empty) offering to create the typed name.
   const backend = createBackend(seedLedger());
   await openLedger(page, backend);
-  await page.locator('#search').fill('zzz');
+  await page.locator('#search').fill('Kamla Devi');
   await expect(page.locator('.customer-row')).toHaveCount(0);
   await expect(page.locator('#search-empty')).toBeVisible();
+  await expect(page.locator('#search-empty-title')).toContainText('Kamla Devi');
+
+  // and the offer has to be real: the typed name lands in the new-customer form
+  await page.locator('#search-empty-add').click();
+  await expect(page.locator('#dlg-customer')).toBeVisible();
+  await expect(page.locator('#cust-dlg-title')).toHaveText('New customer');
+  await expect(page.locator('#cust-input-name')).toHaveValue('Kamla Devi');
+
+  await page.locator('#cust-save').click();
+  await expect(page.locator('#dlg-customer')).toBeHidden();
+  await expect.poll(() => backend.state.users.some((u) => u.name === 'Kamla Devi')).toBe(true);
 });
 
 test('a just-created customer must appear at the top of the list', async ({ page }) => {

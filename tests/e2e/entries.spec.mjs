@@ -36,6 +36,53 @@ test('editing an entry updates the sheet', async ({ page }) => {
   await expect.poll(() => backend.state.transactions.find((t) => t.id === 't1')?.amount).toBe(600);
 });
 
+test('the direction toggle is edit-only and flips the type in the sheet', async ({ page }) => {
+  // Direction is the most-mistapped thing in the app, but the two entry buttons
+  // are deliberately frozen — the fix lives in the edit dialog only (audit 1.3).
+  const backend = createBackend(seedLedger());
+  await openLedger(page, backend);
+  await openCustomer(page, 'Ramu Halwai');
+
+  await page.locator('#btn-gave').click();
+  await expect(page.locator('#dlg-txn')).toBeVisible();
+  await expect(page.locator('#txn-dir')).toBeHidden();     // new entry: no toggle
+  await page.locator('#dlg-txn [data-close]').click();
+  await expect(page.locator('#dlg-txn')).toBeHidden();
+
+  await page.locator('.txn-row', { hasText: 'atta' }).click();
+  await expect(page.locator('#txn-dir')).toBeVisible();    // edit: the toggle appears
+  await page.locator('.dir-btn[data-dir="received"]').click();
+  await expect(page.locator('#txn-title')).toHaveText('Received');
+  await expect(page.locator('.dir-btn[data-dir="received"]')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.dir-btn[data-dir="given"]')).toHaveAttribute('aria-pressed', 'false');
+  await page.locator('#txn-save').click();
+
+  await expect(page.locator('#dlg-txn')).toBeHidden();
+  await expect(page.locator('#bal-amt')).toContainText('700');  // -500 - 200
+  await expect.poll(() => backend.state.transactions.find((t) => t.id === 't1')?.type)
+    .toBe('received');
+});
+
+test('every save gets a coloured readback — red for diya, green for mila', async ({ page }) => {
+  // The only place a red/green mis-tap gets noticed at all (audit 1.3).
+  const backend = createBackend(seedLedger());
+  await openLedger(page, backend);
+  await openCustomer(page, 'Ramu Halwai');
+  const toast = page.locator('#toast');
+
+  await addEntry(page, { type: 'given', amount: 250 });
+  await expect(toast).toBeVisible();
+  await expect(toast).toHaveClass(/\bgave\b/);
+  await expect(toast).toContainText('diya');
+  await expect(toast).toContainText('Ramu');
+  await expect(toast).toContainText('550');       // the balance the entry produced
+
+  await addEntry(page, { type: 'received', amount: 50 });
+  await expect(toast).toHaveClass(/\bgot\b/);
+  await expect(toast).toContainText('mila');
+  await expect(toast).toContainText('500');
+});
+
 test('double-tap delete removes the entry from the sheet', async ({ page }) => {
   const backend = createBackend(seedLedger());
   await openLedger(page, backend);
