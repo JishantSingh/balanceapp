@@ -31,3 +31,42 @@ test('photo attaches, uploads, thumbnails in the ledger, and opens in the viewer
   await expect(page.locator('#dlg-photo')).toBeVisible();
   await expect(page.locator('#photo-img')).toHaveAttribute('src', /^data:image/);
 });
+
+test('a viewed photo persists on-device and reopens offline after a reload', async ({ page }) => {
+  const backend = createBackend(seedLedger());
+  backend.state.transactions.push({
+    id: 'tp1', user_name: 'u1', date: '2026-08-06',
+    type: 'received', amount: 77, comment: 'photo wala', photo: 'ph1',
+  });
+  backend.state.photos.ph1 = TINY_PNG.toString('base64');
+  await openLedger(page, backend);
+  await openCustomer(page, 'Ramu Halwai');
+
+  // first view fetches from the backend, then persists to IndexedDB
+  const thumb = page.locator('img.txn-thumb');
+  await expect(thumb).toBeVisible();
+  await thumb.click();
+  await expect(page.locator('#dlg-photo')).toBeVisible();
+  await expect(page.locator('#photo-img')).not.toHaveClass(/photo-loading/);
+  await page.locator('#dlg-photo button[type="submit"]').click();
+
+  // wait for the IndexedDB write to be durable before tearing the page down
+  await expect.poll(() => page.evaluate((pid) => new Promise((resolve) => {
+    const r = indexedDB.open('bahi-photos', 1);
+    r.onsuccess = () => {
+      const q = r.result.transaction('photos').objectStore('photos').get(pid);
+      q.onsuccess = () => resolve(!!q.result);
+      q.onerror = () => resolve(false);
+    };
+    r.onerror = () => resolve(false);
+  }), 'ph1')).toBe(true);
+
+  // dead network + fresh page = no memory cache, no backend — IndexedDB serves it
+  backend.setMode('down');
+  await page.reload();
+  await openCustomer(page, 'Ramu Halwai');
+  await page.locator('img.txn-thumb').click();
+  await expect(page.locator('#dlg-photo')).toBeVisible();
+  await expect(page.locator('#photo-img')).not.toHaveClass(/photo-loading/);
+  await expect(page.locator('#photo-img')).toHaveAttribute('src', /^data:image/);
+});

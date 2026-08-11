@@ -792,3 +792,6 @@ body {
 
 /* fresh-capture preview inside the photo button — the picture is the proof */
 .photo-prev { width: 30px; height: 30px; border-radius: 6px; object-fit: cover; flex: none; }
+
+/* full photo still arriving — the blurred thumb holds the frame */
+#photo-img.photo-loading { filter: blur(8px); transform: scale(1.02); }

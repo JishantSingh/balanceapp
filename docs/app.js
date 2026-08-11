@@ -985,11 +985,7 @@ async function loadLedgerThumbs() {
   for (const id of ids) {
     thumbLoading.add(id);
     try {
-      if (!photoCache[id]) {
-        const data = await api('photo', { id });
-        if (!data.b64) throw new Error('not found');
-        photoCache[id] = `data:${data.mime || 'image/jpeg'};base64,` + data.b64;
-      }
+      await fetchFullPhoto(id);
       thumbs[id] = { d: await makeThumb(photoCache[id]), t: Date.now() };
       saveThumbs();
       document.querySelectorAll(`#txn-list .txn-thumb-ph[data-pid="${CSS.escape(id)}"]`).forEach((el) => {
@@ -1096,6 +1092,7 @@ let pendingInvite = null;    // an invite waiting on the switch dialog
 function wipeLedgerData() {
   ledgerGen++;   // whatever is on the wire now belongs to the khata we are leaving
   [LS_CACHE, LS_QUEUE, LS_FAILED, LS_DEMO, LS_THUMBS].forEach((k) => localStorage.removeItem(k));
+  idbPhotosClear();
   db = { users: [], transactions: [] };
   queue = [];
   failed = [];
@@ -1442,19 +1439,89 @@ function openPhotoViewer(fromForm) {
 
 async function viewPhotoById(id, fromForm) {
   const img = $('photo-img');
-  img.src = '';
+  // Open instantly: the 96px thumb (blurred up) is on-device; the full photo
+  // sharpens in when it arrives. Waiting on a closed dialog reads as broken.
+  const thumb = thumbs[id] && thumbs[id].d;
+  img.src = photoCache[id] || thumb || '';
+  img.classList.toggle('photo-loading', !photoCache[id]);
+  openPhotoViewer(fromForm);
+  if (photoCache[id]) return;
   try {
-    if (!photoCache[id]) {
-      toast('Photo aa rahi hai…');
-      const data = await api('photo', { id });
-      if (!data.b64) throw new Error('Photo not found');
-      photoCache[id] = `data:${data.mime || 'image/jpeg'};base64,` + data.b64;
-    }
+    await fetchFullPhoto(id);
     img.src = photoCache[id];
-    openPhotoViewer(fromForm);
+    img.classList.remove('photo-loading');
   } catch (err) {
     toast('Photo nahi khul payi: ' + err.message, true);
   }
+}
+
+// One path for full photos: memory → device store → network (persisting on
+// the way through, so a photo fetched for ANY reason is durable on-device).
+async function fetchFullPhoto(id) {
+  if (photoCache[id]) return photoCache[id];
+  const stored = await idbPhotoGet(id);
+  if (stored) { photoCache[id] = stored; return stored; }
+  busy(true);
+  try {
+    const data = await api('photo', { id });
+    if (!data.b64) throw new Error('Photo not found');
+    photoCache[id] = `data:${data.mime || 'image/jpeg'};base64,` + data.b64;
+    await idbPhotoPut(id, photoCache[id]);
+    return photoCache[id];
+  } finally { busy(false); }
+}
+
+// ---------------------------------------------------------------- photo store (IndexedDB)
+// Full-size photos persist on-device so repeat views are instant and work
+// offline. LRU-capped; wiped with the rest of the ledger data on disconnect
+// or switch (bill photos must not outlive the khata on a device).
+
+const PHOTO_STORE_MAX = 30;
+
+function idbPhotos() {
+  return new Promise((resolve, reject) => {
+    const r = indexedDB.open('bahi-photos', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('photos');
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+  });
+}
+
+async function idbPhotoGet(id) {
+  try {
+    const db = await idbPhotos();
+    return await new Promise((resolve) => {
+      const req = db.transaction('photos').objectStore('photos').get(id);
+      req.onsuccess = () => resolve(req.result ? req.result.d : null);
+      req.onerror = () => resolve(null);
+    });
+  } catch (e) { return null; }
+}
+
+async function idbPhotoPut(id, dataUri) {
+  try {
+    const db = await idbPhotos();
+    const tx = db.transaction('photos', 'readwrite');
+    const store = tx.objectStore('photos');
+    store.put({ d: dataUri, t: Date.now() }, id);
+    const keysReq = store.getAllKeys();
+    const allReq = store.getAll();
+    keysReq.onsuccess = () => allReq.onsuccess = () => {
+      const keys = keysReq.result, rows = allReq.result;
+      if (keys.length <= PHOTO_STORE_MAX) return;
+      keys.map((k, i) => ({ k, t: rows[i].t }))
+        .sort((a, b) => a.t - b.t)
+        .slice(0, keys.length - PHOTO_STORE_MAX)
+        .forEach(({ k }) => store.delete(k));
+    };
+    // resolve only once the write is durable — a reload right after viewing
+    // must not outrun the commit
+    await new Promise((resolve) => { tx.oncomplete = resolve; tx.onerror = resolve; tx.onabort = resolve; });
+  } catch (e) { /* cache only — never block the view */ }
+}
+
+function idbPhotosClear() {
+  try { indexedDB.deleteDatabase('bahi-photos'); } catch (e) { /* best effort */ }
 }
 
 // ---------------------------------------------------------------- entry save & undo
@@ -1665,6 +1732,7 @@ function init() {
   $('btn-leave-demo').addEventListener('click', () => {
     $('dlg-settings').close();
     [LS_CONFIG, LS_CACHE, LS_QUEUE, LS_FAILED, LS_THUMBS].forEach((k) => localStorage.removeItem(k));
+    idbPhotosClear();
     config = null;
     db = { users: [], transactions: [] };
     queue = [];
