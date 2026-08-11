@@ -24,7 +24,7 @@ test('photo attaches, uploads, thumbnails in the ledger, and opens in the viewer
     backend.state.transactions.find((t) => t.amount === 42)?.photo || ''
   ).toMatch(/^ph/);
 
-  // ledger grows a thumbnail (lazy fetch via the photo action), tap → viewer
+  // ledger grows a thumbnail (built from the bytes we just uploaded), tap → viewer
   const thumb = page.locator('img.txn-thumb').first();
   await expect(thumb).toBeVisible({ timeout: 10_000 });
   await thumb.click();

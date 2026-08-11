@@ -1,5 +1,5 @@
 /**
- * Bahi — Google Sheets backend API (Khatabook-style udhaar ledger) · v7
+ * Bahi — Google Sheets backend API (Khatabook-style udhaar ledger) · v8
  *
  * Sheets (columns are created/added automatically):
  *   "user":        user_id | name | created_at | phone | cohort | last_reminded | token
@@ -13,6 +13,17 @@
  *
  * Photos are stored in a "Bahi Photos" folder in YOUR Drive and served only
  * through this API (key required) — they are never made public.
+ *
+ * Retries are safe (v8). The phone queues every write and replays it until an
+ * answer arrives, so an answer LOST after the row was already written used to
+ * mean a second identical row (and a second uploaded photo). Two rules fix it:
+ *   · addTxn/addUser accept an optional top-level `cid` — an opaque client id.
+ *     The first insert remembers it; a replay with the same `cid` returns the
+ *     row that insert made instead of writing another one.
+ *   · deleteTxn/deleteUser treat "already gone" as success — a delete that
+ *     arrives twice has still done exactly what it was asked to do.
+ * (updateTxn/updateUser still fail on a missing row: a lost update is a real
+ * conflict, not a duplicate.) Requests without `cid` behave exactly as v7 did.
  *
  * Script Properties this file owns (all survive self-updates):
  *   apiKey       — the API key (never in the code)
@@ -79,7 +90,7 @@ function adminPin_() {
 
 // Backend version + where released code is published. The self-updater
 // refuses anything whose hashes don't match the release manifest.
-const BAHI_VERSION = 7;
+const BAHI_VERSION = 8;
 const RELEASE_BASE = 'https://raw.githubusercontent.com/JishantSingh/balanceapp/main/apps-script/';
 const RELEASE_MANIFEST = RELEASE_BASE + 'release.json';
 
@@ -131,13 +142,13 @@ function handle(req) {
       case 'list':
         return respond({ ok: true, data: withLock(listAll) });
       case 'addUser':
-        return respond({ ok: true, data: withLock(addUser, req.data) });
+        return respond({ ok: true, data: withLock(addUser, req.data, req.cid) });
       case 'updateUser':
         return respond({ ok: true, data: withLock(updateUser, req.id, req.data) });
       case 'deleteUser':
         return respond({ ok: true, data: withLock(deleteUser, req.id) });
       case 'addTxn':
-        return respond({ ok: true, data: withLock(addTxn, req.data) });
+        return respond({ ok: true, data: withLock(addTxn, req.data, req.cid) });
       case 'updateTxn':
         return respond({ ok: true, data: withLock(updateTxn, req.id, req.data) });
       case 'deleteTxn':
@@ -319,6 +330,46 @@ function writeRow(sheet, headers, rowNum, obj) {
   });
 }
 
+// One row, shaped exactly like `list` shapes it (dates serialized, missing
+// columns blank) — so a replayed insert answers with the same row the original
+// insert answered with.
+function readRow(sheet, headers, rowNum) {
+  const map = headerMap(sheet);
+  const values = sheet.getRange(rowNum, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const obj = {};
+  headers.forEach(function (h) {
+    obj[h] = map[h] === undefined ? '' : serialize(values[map[h]]);
+  });
+  return obj;
+}
+
+// ---------- idempotent inserts (client id) ----------
+// The phone keeps every write queued until an answer arrives, so an answer lost
+// AFTER the row was written comes back as a retry. `cid` — an opaque id the
+// client mints once per queued write — turns that retry into a replay: the id
+// of the row the first attempt created is remembered here, and the retry gets
+// that row back instead of writing a second one (and, for a photo, uploading a
+// second file). CacheService is per-script, ephemeral and needs NO OAuth
+// scope; 6 hours is its ceiling and far outlives any retry loop. A request
+// without `cid` (an older frontend) takes exactly the v7 path.
+
+const CID_TTL = 21600;   // 6 hours — CacheService's maximum
+
+function cidKey(cid) {
+  // Cache keys are capped at 250 chars; ours are ~20, but a client is not
+  // trusted to keep them short.
+  const s = String(cid === undefined || cid === null ? '' : cid).slice(0, 200);
+  return s ? 'cid:' + s : '';
+}
+
+function cidLookup(key) {
+  return key ? CacheService.getScriptCache().get(key) : null;
+}
+
+function cidRemember(key, id) {
+  if (key) CacheService.getScriptCache().put(key, String(id), CID_TTL);
+}
+
 // ---------- users ----------
 
 const COHORTS = ['off', 'weekly', '15days', 'monthly'];
@@ -327,8 +378,18 @@ function cleanCohort(v) {
   return COHORTS.indexOf(String(v)) !== -1 ? String(v) : 'monthly';
 }
 
-function addUser(data) {
+function addUser(data, cid) {
   const sheet = userSheet();
+  const key = cidKey(cid);
+  const hit = cidLookup(key);
+  if (hit) {
+    // This request already ran; its answer just never got home. Replay the row
+    // it made. If that row has since been deleted, the id is the only honest
+    // thing left to say — the client remaps to it and the next `list`
+    // reconciles the row away.
+    const was = findRow(sheet, 'user_id', hit);
+    return was === -1 ? { user_id: hit, replayed: true } : readRow(sheet, USER_HEADERS, was);
+  }
   const user = {
     user_id: shortId(),
     name: String(data.name || '').trim(),
@@ -341,6 +402,7 @@ function addUser(data) {
   if (!user.name) throw new Error('Name is required');
   writeRow(sheet, USER_HEADERS, sheet.getLastRow() + 1, user);
   user.created_at = serialize(user.created_at);
+  cidRemember(key, user.user_id);
   return user;
 }
 
@@ -371,10 +433,11 @@ function remindLog(id) {
 }
 
 // Deletes the customer AND all their transactions (photos are trashed too).
+// "Already gone" is success, exactly as in deleteTxn above.
 function deleteUser(id) {
   const uSheet = userSheet();
   const row = findRow(uSheet, 'user_id', id);
-  if (row === -1) throw new Error('Customer not found: ' + id);
+  if (row === -1) return { deleted: id, already: true };
 
   const tSheet = txnSheet();
   const map = headerMap(tSheet);
@@ -478,12 +541,21 @@ function resolvePhoto(incoming, existing) {
   return savePhoto(String(incoming));
 }
 
-function addTxn(data) {
+function addTxn(data, cid) {
   const sheet = txnSheet();
+  const key = cidKey(cid);
+  const hit = cidLookup(key);
+  if (hit) {
+    // A replay — see addUser. Answering before buildTxn also means the photo
+    // bytes riding along on this retry are never uploaded a second time.
+    const was = findRow(sheet, 'id', hit);
+    return was === -1 ? { id: hit, replayed: true } : readRow(sheet, TXN_HEADERS, was);
+  }
   const txn = buildTxn(shortId(), data, '');
   if (!txn.user_name) throw new Error('user_id is required');
   writeRow(sheet, TXN_HEADERS, sheet.getLastRow() + 1, txn);
   txn.date = serialize(txn.date);
+  cidRemember(key, txn.id);
   return txn;
 }
 
@@ -498,10 +570,14 @@ function updateTxn(id, data) {
   return txn;
 }
 
+/* Deleting a row that is not here is not an error: either this delete already
+   landed and only its answer was lost, or somebody else removed the row. Both
+   end in the state the caller asked for. Failing instead would make a retrying
+   phone roll the delete back and resurrect the entry. */
 function deleteTxn(id) {
   const sheet = txnSheet();
   const row = findRow(sheet, 'id', id);
-  if (row === -1) throw new Error('Transaction not found: ' + id);
+  if (row === -1) return { deleted: id, already: true };
   const photo = String(readCell(sheet, row, 'photo') || '');
   if (photo) trashPhoto(photo);
   sheet.deleteRow(row);

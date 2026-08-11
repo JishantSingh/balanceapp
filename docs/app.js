@@ -481,8 +481,19 @@ function enqueue(action, payload, tmpId, undo) {
   // refuses this write: an add needs only its temporary id, an edit or delete
   // needs a pre-image of what it overwrote.
   const rollback = undo || (tmpId ? { type: action, tmpId } : null);
+  const qid = nextId();   // identity: the queue is never touched by position
+  /* …and, for the two writes that INSERT, the idempotency key the backend
+     needs. A reply lost after the row was written looks exactly like a reply
+     that never happened: the item stays queued and is sent again. Carrying
+     the same id on every attempt lets a v8 backend answer the retry with the
+     row it already made instead of a second one (and a second photo upload).
+     Older backends ignore the field. It rides at the top level of the request,
+     next to `action` and `key` — apiWith merges the payload in there. */
+  if (action === 'addTxn' || action === 'addUser') {
+    payload = Object.assign({}, payload, { cid: (payload && payload.cid) || qid });
+  }
   queue.push({
-    qid: nextId(),        // identity: the queue is never touched by position
+    qid,
     action,
     payload,
     tmpId: tmpId || null,
@@ -524,6 +535,24 @@ function dropQueued(item) {
   return at >= 0;
 }
 
+/* Did this refusal mean "that row is already gone"? Only a delete can be
+   forgiven this way, and only on the messages Code.gs itself writes — error
+   TEXT is not contract (ARCHITECTURE §3.5), so this matches their stable
+   opening words and treats everything else as a real refusal. Backends from v8
+   on answer such a delete with success and never reach here; this exists for
+   the ones still out there. When in doubt we keep the old behavior: a wrongly
+   forgiven delete is a lost write, and those are the ones the failed chip is
+   for. */
+function alreadyGone(action, message) {
+  const msg = String(message || '');
+  if (action === 'deleteTxn') return msg.startsWith('Error: Transaction not found') ||
+    msg.startsWith('Transaction not found');
+  if (action === 'deleteUser') return msg.startsWith('Error: Customer not found') ||
+    msg.startsWith('Customer not found') || msg.startsWith('User not found') ||
+    msg.startsWith('Error: User not found');
+  return false;
+}
+
 let processing = false;
 async function processQueue() {
   if (processing || connecting || !queue.length || (config && config.demo)) return;
@@ -544,7 +573,19 @@ async function processQueue() {
         // JSON at all — keep queued, retry later. ONLY a backend that actually
         // said no gets rolled back.
         if (!err || !err.rejected) return;
-        // The server refused it (bad key, already deleted, bad data). Drop it
+        /* …except a delete whose row the sheet no longer has. That is not a
+           refusal, it is our own delete arriving twice: the first attempt
+           committed and only its answer was lost. Rolling it back would put a
+           deleted entry back on the screen and park it in the failed list. A
+           v8 backend answers such a delete with plain success; this is the
+           softening for the older ones, which still throw. */
+        if (alreadyGone(item.action, err.message)) {
+          dropQueued(item);
+          saveQueue();
+          if (ledger !== ledgerGen) return;   // ledger swapped underneath: stop here
+          continue;
+        }
+        // The server refused it (bad key, stale row, bad data). Drop it
         // so the queue can't jam, undo the optimistic local change, and park
         // it where the merchant can see it — a rejected write must never just
         // disappear while the ledger keeps showing it (audit 0.1).
@@ -572,6 +613,12 @@ async function processQueue() {
       // The ledger was wiped or switched while this was on the wire: it landed
       // in the sheet it was meant for, but nothing here may be remapped to it.
       if (ledger !== ledgerGen) { saveQueue(); return; }
+      /* The photo this write carried is already on this phone — it is the very
+         file we just uploaded. Filing it under the id the sheet gave it means
+         the ledger's thumbnail is built locally, instantly, with no network at
+         all; otherwise the list would download the picture back from Drive
+         before it could draw a 96px square of it. */
+      await keepUploadedPhoto(item, result);
       // success — resolve temporary ids to server ids
       if (item.tmpId && result) {
         if (item.action === 'addUser') remapUserId(item.tmpId, result.user_id, result);
@@ -583,6 +630,20 @@ async function processQueue() {
   } finally {
     processing = false;
   }
+}
+
+/* Seed both photo caches from a write that just synced: the bytes went up in
+   this item's payload, the sheet answered with the file id they were stored
+   under, and those two facts together are a fully warm cache. Only the two
+   actions that can carry photo bytes qualify. */
+async function keepUploadedPhoto(item, result) {
+  const b64 = item.payload && item.payload.data && item.payload.data.photo;
+  const id = result && result.photo;
+  if (!b64 || !id) return;
+  if (item.action !== 'addTxn' && item.action !== 'updateTxn') return;
+  const uri = 'data:image/jpeg;base64,' + b64;   // compressImage always emits JPEG
+  photoCache[id] = uri;
+  await idbPhotoPut(id, uri);
 }
 
 function remapUserId(tmpId, realId, serverUser) {

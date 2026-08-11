@@ -1,4 +1,4 @@
-/* In-process mock of the Bahi Apps Script backend (Code.gs v7 contract).
+/* In-process mock of the Bahi Apps Script backend (Code.gs v8 contract).
    Installed per-test via Playwright request routing, so every test gets an
    isolated "deployment" with its own sheet state and failure mode.
 
@@ -7,13 +7,16 @@
                                             pin, sheetUrl}}
    - POST text/plain JSON {action,key,…} → per-action data (full user / full txn)
    - errors are HTTP 200 with {ok:false, error} (Apps Script never 4xxs)
-   Failure modes: 'ok' | 'badkey' | 'html' (sign-in page) | 'down' (network).
+   Failure modes: 'ok' | 'badkey' | 'html' (sign-in page) | 'down' (network) |
+   'drop-once' (commit, then lose the answer — see below).
 
    Version skew: `createBackend({ v: 6 })` answers like a pre-Suraksha backend
    — `list` OMITS `pin` and `sheetUrl` entirely (the frontend feature-detects
    on the FIELD's absence, so leaving them null would not exercise the
    fallback) and `setTxnPin` comes back "Unknown action", exactly as a real v6
-   deployment's switch default does.
+   deployment's switch default does. `{ v: 7 }` is a pre-idempotency backend:
+   it ignores `cid` and still errors on a delete whose row is gone, which is
+   what the frontend's own softening has to cope with forever.
 
    Deliberately NOT emulated: Apps Script's 302 redirect dance. The browser
    follows redirects inside the network stack — below any app code — and
@@ -46,15 +49,24 @@ export function seedLedger() {
   };
 }
 
+/* Everything that changes the sheet — the actions 'drop-once' can commit and
+   then lie about. Reads are left alone so a list/photo call cannot burn it. */
+const MUTATIONS = new Set([
+  'addUser', 'updateUser', 'deleteUser',
+  'addTxn', 'updateTxn', 'deleteTxn',
+  'remindLog', 'setTxnPin',
+]);
+
 export function createBackend(opts = {}) {
   const state = {
     key: opts.key ?? 'testkey',
     url: opts.url ?? MOCK_EXEC,  // which deployment this one answers for
-    v: opts.v ?? 7,              // set 6 to simulate a pre-Suraksha backend
+    v: opts.v ?? 8,              // set 6/7 to simulate an older backend
     mode: 'ok',
     users: opts.users ?? [],
     transactions: opts.transactions ?? [],
     photos: opts.photos ?? {},   // photoId -> b64
+    cids: {},                    // client id -> the row id its insert created
     adminPin: opts.adminPin ?? '123456',  // Master PIN; never leaves the server
     pin: opts.pin ?? null,       // App PIN: null | {salt, hash}
     sheetUrl: opts.sheetUrl ?? MOCK_SHEET_URL,
@@ -70,6 +82,19 @@ export function createBackend(opts = {}) {
   // Sheets hands back whatever the cell holds — an all-digit id arrives as a
   // Number. Code.gs matches rows with String(a) === String(b); so do we.
   const same = (a, b) => String(a) === String(b);
+
+  /* Idempotent inserts (Code.gs v8). The first addTxn/addUser carrying a `cid`
+     remembers which row it made; a replay of the same `cid` gets that row back
+     instead of writing a second one. A row deleted since answers with its id
+     alone, exactly as Code.gs does — the client remaps, the next list
+     reconciles. A v7 deployment ignores `cid` entirely. */
+  const cidHit = (cid, idField, find) => {
+    if (state.v < 8 || !cid) return null;
+    const id = state.cids[cid];
+    if (id === undefined) return null;
+    return find(id) || { [idField]: id, replayed: true };
+  };
+  const cidRemember = (cid, id) => { if (state.v >= 8 && cid) state.cids[cid] = id; };
 
   function api(req) {
     state.log.push(req.action);
@@ -99,6 +124,8 @@ export function createBackend(opts = {}) {
         return ok(data);
       }
       case 'addUser': {
+        const replay = cidHit(req.cid, 'user_id', (id) => state.users.find((x) => same(x.user_id, id)));
+        if (replay) return ok(replay);
         const u = {
           user_id: newId('u'), name: String(req.data.name || '').trim(),
           created_at: new Date().toISOString().slice(0, 10),
@@ -106,6 +133,7 @@ export function createBackend(opts = {}) {
           token: 'tok_' + newId('n') + '_1234567890',
         };
         state.users.push(u);
+        cidRemember(req.cid, u.user_id);
         return ok(u);
       }
       case 'updateUser': {
@@ -120,11 +148,21 @@ export function createBackend(opts = {}) {
         }
         return ok(u);
       }
-      case 'deleteUser':
+      /* "Already gone" is success from v8 on: a delete that arrives twice has
+         still done what it was asked to do, and failing it makes a retrying
+         phone roll the delete back. A v7 deployment still says no. */
+      case 'deleteUser': {
+        if (!state.users.some((x) => same(x.user_id, req.id))) {
+          return state.v >= 8 ? ok({ deleted: req.id, already: true })
+                              : err('Error: Customer not found: ' + req.id);
+        }
         state.users = state.users.filter((x) => !same(x.user_id, req.id));
         state.transactions = state.transactions.filter((x) => !same(x.user_name, req.id));
-        return ok({ deleted: true });
+        return ok({ deleted: req.id });
+      }
       case 'addTxn': {
+        const replay = cidHit(req.cid, 'id', (id) => state.transactions.find((x) => same(x.id, id)));
+        if (replay) return ok(replay);
         if (!req.data.user_id) return err('user_id is required');
         let photo = '';
         if (req.data.photo) { photo = newId('ph'); state.photos[photo] = req.data.photo; }
@@ -134,6 +172,7 @@ export function createBackend(opts = {}) {
           amount: Number(req.data.amount), comment: String(req.data.comment || ''), photo,
         };
         state.transactions.push(t);
+        cidRemember(req.cid, t.id);
         return ok(t);
       }
       case 'updateTxn': {
@@ -148,9 +187,18 @@ export function createBackend(opts = {}) {
         });
         return ok(t);
       }
-      case 'deleteTxn':
+      case 'deleteTxn': {
+        // Code.gs throws here pre-v8, and handle() reports it as String(err) —
+        // hence the "Error: " prefix a real deployment puts on the wire. The
+        // frontend's forgiveness matches that exact text, so the mock has to
+        // carry it too.
+        if (!state.transactions.some((x) => same(x.id, req.id))) {
+          return state.v >= 8 ? ok({ deleted: req.id, already: true })
+                              : err('Error: Transaction not found: ' + req.id);
+        }
         state.transactions = state.transactions.filter((x) => !same(x.id, req.id));
-        return ok({ deleted: true });
+        return ok({ deleted: req.id });
+      }
       case 'photo': {
         const b64 = state.photos[req.id];
         if (!b64) return err('Photo not found');
@@ -203,6 +251,18 @@ export function createBackend(opts = {}) {
     } else {
       try { req = JSON.parse(request.postData() || '{}'); }
       catch { return fulfillJSON(route, { ok: false, error: 'Bad request body' }); }
+    }
+
+    /* 'drop-once' — the failure that costs real money. The write is APPLIED
+       (row written, photo stored), and only then does the answer disappear:
+       a dropped connection after the commit, which is indistinguishable on the
+       phone from a write that never arrived. The phone must therefore retry,
+       and the retry must not write the row again. Fires once, then the
+       deployment is healthy — the retry is meant to succeed. */
+    if (state.mode === 'drop-once' && MUTATIONS.has(req.action)) {
+      state.mode = 'ok';
+      api(req);
+      return route.abort('connectionfailed');
     }
     return fulfillJSON(route, api(req));
   }
