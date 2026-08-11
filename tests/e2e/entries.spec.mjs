@@ -36,6 +36,38 @@ test('editing an entry updates the sheet', async ({ page }) => {
   await expect.poll(() => backend.state.transactions.find((t) => t.id === 't1')?.amount).toBe(600);
 });
 
+test('an all-digit id (a Number out of Sheets) is still tappable and editable', async ({ page }) => {
+  /* Ids are 8 random hex characters, so roughly one in fifty is all digits —
+     and Sheets hands those back as Numbers, not strings. Reads compared with
+     String() and worked; every mutation path compared with === against a
+     string data-attribute and quietly missed, so the row could not be opened
+     at all. Ids are normalised where they enter the app now. */
+  const backend = createBackend({
+    users: [{
+      user_id: 90210, name: 'Numeric Nandu', created_at: '2026-07-01',
+      phone: '', cohort: '', last_reminded: '', token: 'tok_nandu_1234567890',
+    }],
+    transactions: [
+      { id: 12345678, user_name: 90210, date: '2026-08-01', type: 'given', amount: 500, comment: 'atta', photo: '' },
+    ],
+  });
+  await openLedger(page, backend);
+  await openCustomer(page, 'Numeric Nandu');
+  await expect(page.locator('#bal-amt')).toContainText('500');
+
+  await page.locator('.txn-row', { hasText: 'atta' }).click();
+  await expect(page.locator('#dlg-txn')).toBeVisible();      // used to never open
+  await page.locator('#txn-amount').fill('600');
+  await page.locator('#txn-save').click();
+  await expect(page.locator('#dlg-txn')).toBeHidden();
+
+  await expect(page.locator('#bal-amt')).toContainText('600');
+  await expect.poll(() =>
+    backend.state.transactions.find((t) => String(t.id) === '12345678').amount).toBe(600);
+  await page.locator('#btn-back').click();
+  await expect(page.locator('#chip-failed')).toBeHidden();
+});
+
 test('the direction toggle is edit-only and flips the type in the sheet', async ({ page }) => {
   // Direction is the most-mistapped thing in the app, but the two entry buttons
   // are deliberately frozen — the fix lives in the edit dialog only (audit 1.3).

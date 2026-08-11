@@ -31,34 +31,40 @@ export function seedLedger() {
 export function createBackend(opts = {}) {
   const state = {
     key: opts.key ?? 'testkey',
+    url: opts.url ?? MOCK_EXEC,  // which deployment this one answers for
     v: 6,
     mode: 'ok',
     users: opts.users ?? [],
     transactions: opts.transactions ?? [],
     photos: opts.photos ?? {},   // photoId -> b64
     log: [],                     // every {action} handled, for assertions
+    requests: [],                // every request URL that arrived, gated or not
   };
   let n = 0;
+  let gate = null;
   const newId = (p) => p + String(++n).padStart(4, '0');
 
   const ok = (data) => ({ ok: true, data });
   const err = (message) => ({ ok: false, error: message });
+  // Sheets hands back whatever the cell holds — an all-digit id arrives as a
+  // Number. Code.gs matches rows with String(a) === String(b); so do we.
+  const same = (a, b) => String(a) === String(b);
 
   function api(req) {
     state.log.push(req.action);
     if (req.action === 'passbook') {
       const t = String(req.token || '');
       if (t.length < 12) return err('Invalid passbook link');
-      const u = state.users.find((x) => String(x.token) === t);
+      const u = state.users.find((x) => same(x.token, t));
       if (!u) return err('This passbook link is no longer valid');
       return ok({
         name: u.name,
         transactions: state.transactions
-          .filter((x) => String(x.user_name) === String(u.user_id))
+          .filter((x) => same(x.user_name, u.user_id))
           .map(({ date, type, amount, comment }) => ({ date, type, amount, comment })),
       });
     }
-    if (state.mode === 'badkey' || String(req.key) !== state.key) {
+    if (state.mode === 'badkey' || !same(req.key, state.key)) {
       return err('Unauthorized: bad or missing key');
     }
     switch (req.action) {
@@ -75,14 +81,14 @@ export function createBackend(opts = {}) {
         return ok(u);
       }
       case 'updateUser': {
-        const u = state.users.find((x) => x.user_id === req.id);
+        const u = state.users.find((x) => same(x.user_id, req.id));
         if (!u) return err('User not found');
         Object.assign(u, { name: req.data.name ?? u.name, phone: req.data.phone ?? u.phone });
         return ok(u);
       }
       case 'deleteUser':
-        state.users = state.users.filter((x) => x.user_id !== req.id);
-        state.transactions = state.transactions.filter((x) => x.user_name !== req.id);
+        state.users = state.users.filter((x) => !same(x.user_id, req.id));
+        state.transactions = state.transactions.filter((x) => !same(x.user_name, req.id));
         return ok({ deleted: true });
       case 'addTxn': {
         if (!req.data.user_id) return err('user_id is required');
@@ -97,7 +103,7 @@ export function createBackend(opts = {}) {
         return ok(t);
       }
       case 'updateTxn': {
-        const t = state.transactions.find((x) => x.id === req.id);
+        const t = state.transactions.find((x) => same(x.id, req.id));
         if (!t) return err('Entry not found');
         let photo = t.photo;
         if (req.data.photo === '') photo = '';
@@ -109,7 +115,7 @@ export function createBackend(opts = {}) {
         return ok(t);
       }
       case 'deleteTxn':
-        state.transactions = state.transactions.filter((x) => x.id !== req.id);
+        state.transactions = state.transactions.filter((x) => !same(x.id, req.id));
         return ok({ deleted: true });
       case 'photo': {
         const b64 = state.photos[req.id];
@@ -117,7 +123,7 @@ export function createBackend(opts = {}) {
         return ok({ b64, mime: 'image/png' });
       }
       case 'remindLog': {
-        const u = state.users.find((x) => x.user_id === req.id);
+        const u = state.users.find((x) => same(x.user_id, req.id));
         if (u) u.last_reminded = new Date().toISOString().slice(0, 10);
         return ok({ logged: true });
       }
@@ -138,7 +144,9 @@ export function createBackend(opts = {}) {
   async function handle(route) {
     const request = route.request();
     const url = new URL(request.url());
+    state.requests.push(request.url());   // arrived — recorded before any gating
 
+    if (gate) await gate;                 // held open by hold(), released by the test
     if (state.mode === 'down') return route.abort('connectionfailed');
     if (state.mode === 'html') {
       return route.fulfill({ status: 200, contentType: 'text/html', body: '<html><body>Sign in - Google Accounts</body></html>' });
@@ -157,8 +165,27 @@ export function createBackend(opts = {}) {
   return {
     state,
     setMode(m) { state.mode = m; },
-    async install(page) {
-      await page.route((u) => u.href.startsWith('https://script.google'), handle);
+
+    /* Freeze every reply until the returned function is called. Requests still
+       arrive (state.requests grows), they simply do not finish — which is how
+       a test can stand *inside* an in-flight call instead of racing it. */
+    hold() {
+      let release;
+      gate = new Promise((r) => { release = r; });
+      return () => { gate = null; release(); };
+    },
+
+    /* By default a backend answers for every script.google URL — most tests
+       have exactly one deployment and the second one only has to differ as a
+       string. `{ only: true }` scopes it to its own state.url instead, so two
+       backends can be installed side by side and each one's log tells the
+       truth about what was sent to IT. */
+    async install(page, opts) {
+      const only = !!(opts && opts.only);
+      await page.route(
+        (u) => (only ? u.href.startsWith(state.url) : u.href.startsWith('https://script.google')),
+        handle
+      );
     },
   };
 }

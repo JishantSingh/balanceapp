@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { createBackend, seedLedger } from '../mock-backend.mjs';
-import { openLedger, openCustomer, addEntry } from './helpers.mjs';
+import { openLedger, openCustomer, addEntry, lsJSON } from './helpers.mjs';
 
 test('offline entries queue with a visible chip, then sync when back online', async ({ page }) => {
   const backend = createBackend(seedLedger());
@@ -21,6 +21,31 @@ test('offline entries queue with a visible chip, then sync when back online', as
   backend.setMode('ok');
   await page.locator('#chip-pending').click(); // tap to retry
   await expect.poll(() => backend.state.transactions.some((t) => t.amount === 777)).toBe(true);
+  await expect(page.locator('#chip-pending')).toBeHidden();
+});
+
+test('a reply that is not JSON keeps the write queued — it is not a refusal', async ({ page }) => {
+  /* An Apps Script deployment shared "Only myself" answers Google's sign-in
+     HTML instead of JSON. That SyntaxError is neither a network failure nor a
+     backend saying no, and it used to be classified as a refusal: the whole
+     queue rolled back into the failed list over a sharing setting. */
+  const backend = createBackend(seedLedger());
+  await openLedger(page, backend);
+  await openCustomer(page, 'Ramu Halwai');
+
+  backend.setMode('html');
+  await addEntry(page, { type: 'given', amount: 321 });
+  await expect(page.locator('#dlg-txn')).toBeHidden();
+  await page.locator('#btn-back').click();
+
+  await expect(page.locator('#chip-pending')).toContainText('1');   // still waiting
+  await expect(page.locator('#chip-failed')).toBeHidden();          // never rolled back
+  expect(await lsJSON(page, 'bahi.failed')).toEqual(null);
+
+  // and it goes through untouched the moment the deployment answers properly
+  backend.setMode('ok');
+  await page.locator('#chip-pending').click();
+  await expect.poll(() => backend.state.transactions.some((t) => t.amount === 321)).toBe(true);
   await expect(page.locator('#chip-pending')).toBeHidden();
 });
 

@@ -172,6 +172,10 @@
   </div>
   <ol id="pb-list" class="txn-list"></ol>
   <p id="pb-status" class="pb-status">Loading your passbook…</p>
+  <!-- the merchant tapping their own customer's link: a way back to the khata -->
+  <p id="pb-mine" class="pb-mine" hidden>
+    <button type="button" id="pb-mine-go" class="btn btn-ghost">Yeh mera ledger hai — kholein</button>
+  </p>
   <p class="pb-foot">This passbook comes directly from your shopkeeper's own ledger. Entries update as the khata changes.</p>
 </section>
 
@@ -249,7 +253,8 @@
 <!-- ============ FAILED WRITES DIALOG ============ -->
 <dialog id="dlg-failed" class="sheet">
   <form method="dialog">
-    <div class="sheet-title gave">Yeh save nahi ho paaye</div>
+    <!-- plain title: red is for money, never for a heading -->
+    <div class="sheet-title">Yeh save nahi ho paaye</div>
     <p class="failed-help">Server ne inko nahi liya, isliye khaate se hata diye gaye. Dobara bhejein ya hatayein.</p>
     <ul id="failed-list" class="failed-list"></ul>
     <div class="sheet-actions">
@@ -285,6 +290,12 @@
     <div id="invite-wrap">
       <button type="button" id="btn-invite" class="btn btn-danger-ghost btn-wide">🔗 Doosre phone par ye khata kholein — poora access</button>
       <small class="field-help">Is link se poora khata khulta hai — dekhna aur badalna dono. Sirf apne bharose walon ko bhejein.</small>
+    </div>
+    <!-- demo only: the connection block below has nothing to edit, so the one
+         real action is offered instead. The demo khata itself is kept. -->
+    <div id="settings-demo" hidden>
+      <button type="button" id="btn-leave-demo" class="btn btn-ink btn-wide">Apna asli khata jodein</button>
+      <small class="field-help">Demo phone par bacha rahega — jab chahein wapas khol lein.</small>
     </div>
     <details class="settings-conn">
       <summary>Connection</summary>

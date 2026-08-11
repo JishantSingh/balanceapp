@@ -27,14 +27,18 @@ const DEFAULT_TEMPLATE =
 
 let config = loadJSON(LS_CONFIG) || null;
 let db = loadJSON(LS_CACHE) || { users: [], transactions: [] };
-let queue = loadJSON(LS_QUEUE) || [];
+let queue = loadQueue();
 let failed = loadJSON(LS_FAILED) || [];   // writes the server refused (rolled back locally)
 let authBad = false;                      // last list call failed on the key
+let offline = false;                      // last network attempt failed
 let currentCustomerId = null;
 let editingTxnId = null;
 let editingCustomerId = null;
 let txnFormType = 'given';
 let confirmArmed = null;
+// bumped every time the ledger on this phone is replaced: anything in flight
+// across that line belongs to the old khata and must not be applied here
+let ledgerGen = 0;
 let updateWaiting = false;                // a new app version is installed and waiting
 
 // photo form state: mode 'none' | 'existing' | 'new' | 'removed'
@@ -52,6 +56,26 @@ function loadJSON(key) {
 }
 function saveJSON(key, value) { localStorage.setItem(key, JSON.stringify(value)); }
 function clone(v) { return v == null ? v : JSON.parse(JSON.stringify(v)); }
+
+/* Every local id — a temporary row id or a queue item's identity — comes from
+   here. Date.now() alone collides when two writes land in the same
+   millisecond (a fast double tap, a retry loop), and two queue items sharing
+   an id is exactly how the wrong entry gets removed. */
+let idSeq = 0;
+function nextId() { return Date.now().toString(36) + '-' + (++idSeq).toString(36); }
+function tmpTxnId() { return 'tmp' + nextId(); }
+function tmpUserId() { return 'tmpu' + nextId(); }
+
+// A queue saved while an item was on the wire keeps that item's inflight flag;
+// after a reload nothing is on the wire, so the flags start clean.
+function loadQueue() {
+  const items = loadJSON(LS_QUEUE) || [];
+  items.forEach((item) => {
+    delete item.inflight;
+    if (!item.qid) item.qid = nextId();
+  });
+  return items;
+}
 
 // ---------------------------------------------------------------- dom
 
@@ -154,9 +178,14 @@ function showUpdateBar() {
   topShow($('update-bar'));
 }
 
+/* Overlapping calls (a queue drain under a photo fetch) each turn the bar on
+   and off. A boolean lets whichever finishes first hide a bar the other one
+   still needs, so it is a refcount. */
+let busyN = 0;
 function busy(on) {
+  busyN = Math.max(0, busyN + (on ? 1 : -1));
   const el = $('busy');
-  if (on) topShow(el); else topHide(el);
+  if (busyN > 0) topShow(el); else topHide(el);
 }
 
 function escapeHtml(s) {
@@ -232,14 +261,20 @@ function isAuthError(err) {
   return /unauthor|bad or missing key|invalid key/i.test(String((err && err.message) || ''));
 }
 
-async function api(action, payload) {
-  if (config && config.demo) return demoApi(action, payload);
+/* Every call names the connection it is for. The global `config` is only ever
+   the *committed* ledger: a candidate being validated is passed in here
+   instead of being installed globally, so a write that happens mid-validation
+   can never be addressed to a backend this phone has not agreed to yet
+   (and the settings dialog can never persist a candidate). */
+async function apiWith(cfg, action, payload, opts) {
+  const probe = !!(opts && opts.probe);   // a candidate, not this phone's ledger
+  if (cfg && cfg.demo) { setOffline(false); return demoApi(action, payload); }
 
   // Parsed before any fetch so a bad URL is distinguishable from a network
   // failure — one is fixed in Settings, the other by waiting (audit 0.6)
   let endpoint;
   try {
-    endpoint = new URL(config.url);
+    endpoint = new URL(cfg.url);
   } catch (e) {
     const bad = configError('Backend URL galat hai — Settings me check karein');
     toast(bad.message, true);
@@ -251,31 +286,45 @@ async function api(action, payload) {
     let res;
     if (action === 'list') {
       endpoint.searchParams.set('action', 'list');
-      endpoint.searchParams.set('key', config.key);
+      endpoint.searchParams.set('key', cfg.key);
       res = await fetch(endpoint.toString());
     } else {
       // text/plain keeps the request "simple" so Apps Script needs no CORS preflight
       res = await fetch(endpoint.toString(), {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify(Object.assign({ action, key: config.key }, payload)),
+        body: JSON.stringify(Object.assign({ action, key: cfg.key }, payload)),
       });
     }
-    const json = await res.json();
-    if (!json.ok) throw new Error(json.error || 'Request failed');
+    // A reply that is not JSON is not a refusal: it is Google's sign-in page
+    // in front of a wrongly-shared deployment. Rolling writes back on that
+    // would empty the queue over something a re-share fixes.
+    let json;
+    try {
+      json = await res.json();
+    } catch (e) {
+      throw new Error('Server ne jawab galat bheja — deployment "Anyone" par set karein');
+    }
+    if (!json.ok) {
+      const refused = new Error(json.error || 'Request failed');
+      refused.rejected = true;   // the backend itself said no — the only rollback reason
+      throw refused;
+    }
     setOffline(false);
-    if (action === 'list') setAuthBad(false);
+    if (!probe && action === 'list') setAuthBad(false);
     return json.data;
   } catch (err) {
     if (err instanceof TypeError) setOffline(true);            // network failure
-    else if (action === 'list' && isAuthError(err)) setAuthBad(true);
+    else if (!probe && action === 'list' && isAuthError(err)) setAuthBad(true);
     throw err;
   } finally {
     busy(false);
   }
 }
 
-function setOffline(off) { $('chip-offline').hidden = !off; }
+function api(action, payload) { return apiWith(config, action, payload); }
+
+function setOffline(off) { offline = !!off; updateChips(); }
 
 // A wrong/rotated key used to show nothing at all — now it stays on screen
 // until a list call succeeds. Tapping the chip opens Settings.
@@ -296,11 +345,34 @@ function keepLocalMeta(users) {
   return users;
 }
 
+/* An 8-hex id that happens to be all digits ('12345678') comes back from
+   Sheets as a *Number*. Reads compare with String(), but the mutation paths
+   (row tap, edit, delete) compare with === — and a number never equals the
+   string in a data-attribute, so those rows quietly stop being editable.
+   Ids become strings here, once, the moment they enter the app. */
+function normalizeData(data) {
+  const str = (v) => (v == null ? '' : String(v));
+  const users = (data && data.users) || [];
+  const transactions = (data && data.transactions) || [];
+  users.forEach((u) => { u.user_id = str(u.user_id); });
+  transactions.forEach((t) => { t.id = str(t.id); t.user_name = str(t.user_name); });
+  return { users, transactions };
+}
+
+// A slow list answer must never overwrite a newer one (or a ledger that has
+// been switched underneath it), so every refresh carries a token.
+let refreshGen = 0;
 async function refresh(silent) {
+  if (connecting) return;                                 // a candidate is being validated
   if (queue.length) { render(); processQueue(); return; } // local truth wins until synced
+  const gen = ++refreshGen;
+  const ledger = ledgerGen;
   try {
     const data = await api('list');
-    db = { users: keepLocalMeta(data.users || []), transactions: data.transactions || [] };
+    // stale answer, another ledger, or a write made while we waited: keep local
+    if (gen !== refreshGen || ledger !== ledgerGen || queue.length) { render(); return; }
+    const fresh = normalizeData(data);
+    db = { users: keepLocalMeta(fresh.users), transactions: fresh.transactions };
     saveCache();
     render();
   } catch (err) {
@@ -375,6 +447,8 @@ function updateChips() {
   bad.textContent = failed.length + ' nahi bache';
 
   $('chip-auth').hidden = !authBad;
+  // every chip is painted here, so nothing can leave one stuck on screen
+  $('chip-offline').hidden = !offline;
 }
 
 function enqueue(action, payload, tmpId, undo) {
@@ -388,6 +462,7 @@ function enqueue(action, payload, tmpId, undo) {
   // needs a pre-image of what it overwrote.
   const rollback = undo || (tmpId ? { type: action, tmpId } : null);
   queue.push({
+    qid: nextId(),        // identity: the queue is never touched by position
     action,
     payload,
     tmpId: tmpId || null,
@@ -395,7 +470,7 @@ function enqueue(action, payload, tmpId, undo) {
     label: describeWrite(action, payload, rollback),   // named while the entity still exists
   });
   saveQueue();
-  processQueue();
+  if (!connecting) processQueue();   // a candidate is being validated — wait
 }
 
 function userName(id) {
@@ -420,24 +495,41 @@ function describeWrite(action, payload, undo) {
   }
 }
 
+// Remove a queue item by identity. Four other call sites rewrite the queue
+// while an item is on the wire; shifting position 0 afterwards would throw
+// away whatever slid into it — an unrelated, unsent entry.
+function dropQueued(item) {
+  const at = queue.indexOf(item);
+  if (at >= 0) queue.splice(at, 1);
+  return at >= 0;
+}
+
 let processing = false;
 async function processQueue() {
-  if (processing || !queue.length || (config && config.demo)) return;
+  if (processing || connecting || !queue.length || (config && config.demo)) return;
   processing = true;
   try {
     while (queue.length) {
+      if (connecting) return;          // a ledger switch is being validated
       const item = queue[0];
+      if (item.inflight) return;       // belt and braces: never send twice
+      item.inflight = true;
+      const ledger = ledgerGen;        // the ledger this write belongs to
       let result;
       try {
-        result = await api(item.action, item.payload);
+        result = await apiWith(config, item.action, item.payload);
       } catch (err) {
-        // Offline, or a backend URL that needs fixing — keep queued, retry later
-        if (err instanceof TypeError || (err && err.configError)) return;
+        item.inflight = false;
+        // Offline, a backend URL that needs fixing, or a reply that was not
+        // JSON at all — keep queued, retry later. ONLY a backend that actually
+        // said no gets rolled back.
+        if (!err || !err.rejected) return;
         // The server refused it (bad key, already deleted, bad data). Drop it
         // so the queue can't jam, undo the optimistic local change, and park
         // it where the merchant can see it — a rejected write must never just
         // disappear while the ledger keeps showing it (audit 0.1).
-        queue.shift();
+        dropQueued(item);
+        if (ledger !== ledgerGen) { saveQueue(); return; }   // ledger swapped: result is not ours
         rollbackWrite(item);
         failed.push({
           action: item.action,
@@ -455,12 +547,16 @@ async function processQueue() {
         toast('Save nahi hua: ' + failed[failed.length - 1].label, true);
         continue;
       }
+      item.inflight = false;
+      dropQueued(item);
+      // The ledger was wiped or switched while this was on the wire: it landed
+      // in the sheet it was meant for, but nothing here may be remapped to it.
+      if (ledger !== ledgerGen) { saveQueue(); return; }
       // success — resolve temporary ids to server ids
       if (item.tmpId && result) {
         if (item.action === 'addUser') remapUserId(item.tmpId, result.user_id, result);
         if (item.action === 'addTxn') remapTxnId(item.tmpId, result.id);
       }
-      queue.shift();
       saveQueue();
     }
     refresh(true); // fully drained — reconcile with the sheet
@@ -470,9 +566,13 @@ async function processQueue() {
 }
 
 function remapUserId(tmpId, realId, serverUser) {
-  const u = db.users.find((x) => x.user_id === tmpId);
+  realId = String(realId);
+  const u = db.users.find((x) => String(x.user_id) === String(tmpId));
   if (u) Object.assign(u, serverUser || {}, { user_id: realId });
-  db.transactions.forEach((t) => { if (t.user_name === tmpId) t.user_name = realId; });
+  db.transactions.forEach((t) => { if (String(t.user_name) === String(tmpId)) t.user_name = realId; });
+  // an open Edit dialog is still holding the temporary id: leave it there and
+  // Save throws (the edit is lost silently) while Delete queues a dead id
+  if (editingCustomerId === tmpId) editingCustomerId = realId;
   // failed items too: retrying a parked entry after its customer finally
   // landed must point at the real customer, not the dead temporary id
   queue.concat(failed).forEach((item) => {
@@ -489,8 +589,10 @@ function remapUserId(tmpId, realId, serverUser) {
 }
 
 function remapTxnId(tmpId, realId) {
-  const t = db.transactions.find((x) => x.id === tmpId);
+  realId = String(realId);
+  const t = db.transactions.find((x) => String(x.id) === String(tmpId));
   if (t) t.id = realId;
+  if (editingTxnId === tmpId) editingTxnId = realId;   // …same for an open entry
   queue.concat(failed).forEach((item) => {
     if (item.payload && item.payload.id === tmpId) item.payload.id = realId;
   });
@@ -572,6 +674,7 @@ function retryFailed(i) {
   reapplyWrite(f);
   saveCache();
   queue.push({
+    qid: nextId(),
     action: f.action, payload: f.payload, tmpId: f.tmpId || null,
     undo: f.undo || null, label: f.label,
   });
@@ -607,9 +710,14 @@ function renderFailed() {
 
 function isTmp(id) { return /^tmp/.test(String(id)); }
 
-// Find a queued "add" item that created this temporary id
+/* Find a queued "add" item that created this temporary id. An item that is
+   already on the wire is deliberately NOT offered: the row it creates is
+   about to exist in the sheet, so callers must take their "already gone
+   upstream" branch and send a real write instead of editing the payload of a
+   request that has left the phone. */
 function queuedAddFor(tmpId) {
-  return queue.find((item) => item.tmpId === tmpId);
+  const item = queue.find((x) => x.tmpId === tmpId);
+  return item && !item.inflight ? item : null;
 }
 
 // ---------------------------------------------------------------- demo backend
@@ -870,6 +978,7 @@ function txnCell(t) {
 
 // fetch full photos one at a time, shrink to 96px squares, cache locally
 async function loadLedgerThumbs() {
+  if (connecting) return;   // a candidate is being validated — no calls until it lands
   const ids = [...new Set(
     [...document.querySelectorAll('#txn-list .txn-thumb-ph')].map((el) => el.dataset.pid)
   )].filter((id) => id && !thumbs[id] && !thumbLoading.has(id));
@@ -942,17 +1051,34 @@ function openCustomer(id, push) {
 // #s=… carries a merchant connection (URL + key). Fragment never reaches servers.
 // Parsing is *all* this does: nothing in the link is believed until the backend
 // has answered a real list call with it (audit 0.3).
+// The fragment carries credentials (a full-access key, or a customer's
+// passbook token). It leaves the address bar the moment it has been read —
+// on every exit, including the ones that reject it, because a link that
+// failed to parse still has the key sitting in it.
+function stripHash() {
+  if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+}
+
 function parseInviteLink() {
   const m = /#s=([A-Za-z0-9\-_]+)/.exec(location.hash);
   if (!m) return null;
+  stripHash();
   let payload;
   try {
     payload = JSON.parse(atob(m[1].replace(/-/g, '+').replace(/_/g, '/')));
   } catch (e) { return null; }
   if (!payload.u || !/^https:\/\/script\.google(?:usercontent)?\.com\//.test(payload.u)) return null;
-  // the key is a credential — get it out of the address bar immediately
-  history.replaceState(null, '', location.pathname + location.search);
   return { u: payload.u, k: payload.k || '' };
+}
+
+// One entry point for both link kinds, used at boot and again on every
+// hashchange — a link tapped while the app is already open used to do nothing
+// at all (the app only ever read the fragment once, at start-up).
+function dispatchLink() {
+  if (applyPassbookLink()) return true;
+  const invite = parseInviteLink();
+  if (invite) { openInvite(invite); return true; }
+  return false;
 }
 
 /* ---------- connecting to a ledger -------------------------------------
@@ -968,6 +1094,7 @@ let connecting = false;      // a validation is in flight — leave config alone
 let pendingInvite = null;    // an invite waiting on the switch dialog
 
 function wipeLedgerData() {
+  ledgerGen++;   // whatever is on the wire now belongs to the khata we are leaving
   [LS_CACHE, LS_QUEUE, LS_FAILED, LS_DEMO, LS_THUMBS].forEach((k) => localStorage.removeItem(k));
   db = { users: [], transactions: [] };
   queue = [];
@@ -976,6 +1103,9 @@ function wipeLedgerData() {
   Object.keys(photoCache).forEach((k) => delete photoCache[k]);
   Object.keys(demoPhotos).forEach((k) => delete demoPhotos[k]);
   currentCustomerId = null;
+  editingTxnId = null;
+  editingCustomerId = null;
+  setOffline(false);   // the old ledger's last network state says nothing about this one
   setAuthBad(false);
 }
 
@@ -997,18 +1127,15 @@ function freshConfig(url, key, prev) {
   };
 }
 
-// Ask the backend, with the candidate credentials, before anything is saved.
-// On failure the old config is put back exactly as it was.
-async function validateConfig(candidate) {
-  const prev = config;
-  config = candidate;
-  try {
-    return await api('list');
-  } catch (err) {
-    config = prev;
-    setAuthBad(false);   // the bad key was the candidate's, not this ledger's
-    throw err;
-  }
+/* Ask the backend, with the candidate credentials, before anything is saved.
+   The candidate is never installed as the global config to do it: while a
+   list call is in flight the phone is still holding the OLD ledger's data,
+   and every other write in that window (a queue drain, a refresh, an entry
+   the merchant is saving right now) would be addressed to the new backend.
+   The candidate travels as an argument, and the auth chip — which belongs to
+   the ledger this phone actually has — is left alone either way. */
+function validateConfig(candidate) {
+  return apiWith(candidate, 'list', null, { probe: true });
 }
 
 // Validate → wipe (only when the ledger actually changes) → commit → render.
@@ -1021,8 +1148,13 @@ async function connectTo(invite) {
   if (!sameLedger) wipeLedgerData();     // another khata (or the demo's) — nothing survives
   config = candidate;
   saveJSON(LS_CONFIG, config);
-  db = { users: data.users || [], transactions: data.transactions || [] };
-  saveCache();
+  // Same rule as refresh(): unsynced writes are the truth until they drain,
+  // so a key refresh must not blank the entries that are still waiting.
+  if (!queue.length) {
+    const fresh = normalizeData(data);
+    db = { users: keepLocalMeta(fresh.users), transactions: fresh.transactions };
+    saveCache();
+  }
   show('home');
   render();
   return sameLedger;
@@ -1046,39 +1178,56 @@ function bootLedger(opts) {
 // The invite path. Every branch ends with the merchant on a screen that tells
 // the truth about which khata this phone is holding.
 async function openInvite(invite) {
+  if (connecting) return;   // one validation at a time
   const prev = config;
   const prevReal = !!(prev && !prev.demo);
   const sameLedger = prevReal && prev.url === invite.u;
   if (sameLedger && (prev.key || '') === invite.k) { bootLedger(); return; }
 
+  /* Same khata, new key. Nothing is at risk here: the unsynced writes were
+     made in THIS ledger and the new key is exactly what will let them
+     through. Warning about a "galat khata" would be a lie, and the only way
+     past that warning threw the writes away — so this case skips the refusal
+     entirely, adopts the key, and lets the queue drain with it. */
+  if (sameLedger) { await runConnect(invite, prev); return; }
+
   // Unsynced writes belong to the ledger they were made in. Until they are
   // synced or explicitly thrown away, no other connection may touch this phone.
   const unsynced = queue.length + failed.length;
   if (prev && unsynced) { bootLedger(); askSwitch(invite, unsynced); return; }
-  if (prevReal && !sameLedger) { bootLedger(); askSwitch(invite, 0); return; }
+  if (prevReal) { bootLedger(); askSwitch(invite, 0); return; }
 
   await runConnect(invite, prev);
 }
 
 async function runConnect(invite, prev) {
+  if (connecting) return false;
   connecting = true;
+  let ok = false;
   if (!prev) { show('connect'); connectNote('Ledger khul raha hai — thoda intezaar karein…'); }
   else bootLedger({ sync: false });   // keep the old ledger on screen, don't sync it mid-swap
   try {
     const sameLedger = await connectTo(invite);
     connectNote('');
     toast(sameLedger ? 'Nayi key lag gayi ✓' : 'Khata jud gaya ✓');
+    ok = true;
   } catch (err) {
     if (!prev) {
       show('connect');
       connectNote('Yeh link kaam nahi kar raha — bhejne wale se naya link mangwayein', true);
     } else {
-      bootLedger();   // old khata, untouched
+      bootLedger({ sync: false });   // old khata, untouched
       toast('Yeh link kaam nahi kar raha — purana khata waisa hi hai', true);
     }
   } finally {
     connecting = false;
   }
+  // The window is shut: writes may move again (a key refresh exists precisely
+  // so the queue can drain), and the ledger can finish painting its thumbs.
+  render();
+  if (queue.length) processQueue();
+  else if (!ok) refresh(true);   // failed switch — the old khata still deserves a sync
+  return ok;
 }
 
 function askSwitch(invite, unsynced) {
@@ -1104,12 +1253,17 @@ function inviteLink() {
 function applyPassbookLink() {
   const m = /#p=([A-Za-z0-9\-_]+)/.exec(location.hash);
   if (!m) return false;
+  // Unlike the invite key, the passbook token stays in the URL: it is the
+  // customer's only way back in on reload, and it is scoped + revocable.
   let payload;
   try {
     payload = JSON.parse(atob(m[1].replace(/-/g, '+').replace(/_/g, '/')));
   } catch (e) { return false; }
   if (!payload.d && !(payload.u && payload.t)) return false;
   show('passbook');
+  // A merchant who taps their own customer's link would otherwise be stuck on
+  // a read-only screen with no way back to their khata.
+  $('pb-mine').hidden = !config;
   renderPassbook(payload);
   return true;
 }
@@ -1119,10 +1273,16 @@ async function renderPassbook(payload) {
   try {
     let data;
     if (payload.d) {
-      const demo = loadJSON(LS_DEMO) || demoSeed();
-      const u = demo.users.find((x) => x.user_id === payload.d);
+      // Only ever an EXISTING demo on this device. Seeding one here would
+      // fabricate a ledger — invented names and amounts — on the phone of
+      // whoever opened the link (audit 0.3's other half).
+      const demo = loadJSON(LS_DEMO);
+      const u = demo && (demo.users || []).find((x) => String(x.user_id) === String(payload.d));
       if (!u) throw new Error('This passbook link is no longer valid.');
-      data = { name: u.name, transactions: demo.transactions.filter((t) => t.user_name === payload.d) };
+      data = {
+        name: u.name,
+        transactions: (demo.transactions || []).filter((t) => String(t.user_name) === String(payload.d)),
+      };
     } else {
       const res = await fetch(payload.u, {
         method: 'POST',
@@ -1283,9 +1443,13 @@ function saveReadback(payload) {
     : bal < 0 ? money(bal) + ' advance'
     : 'hisaab clear';
   const got = payload.type === 'received';
+  // "sync baaki" is about this write, not about the radio: navigator.onLine is
+  // true on a captive wifi and true when the deployment itself is refusing.
+  // The queue is the only thing that knows whether the sheet has it yet.
+  const waiting = !(config && config.demo) && queue.length > 0;
   showToast(
     `${money(payload.amount)} ${got ? 'mila' : 'diya'} · ${first} — ${tail}` +
-    (navigator.onLine ? '' : ' · sync baaki'),
+    (waiting ? ' · sync baaki' : ''),
     { tone: got ? 'got' : 'gave' }
   );
 }
@@ -1307,7 +1471,7 @@ function restoreTxn(pre) {
 
 function readdTxn(pre) {
   if (!pre) return;
-  const tmpId = 'tmp' + Date.now();
+  const tmpId = tmpTxnId();
   const data = {
     user_id: pre.user_name, date: isoOf(pre.date), type: pre.type,
     amount: pre.amount, comment: pre.comment || '',
@@ -1425,15 +1589,25 @@ function init() {
     const drop = $('dlg-switch').dataset.drop === '1';
     $('dlg-switch').close();
     if (!invite || connecting) return;
-    if (drop) {
-      // explicit discard — the only way past unsynced writes
-      queue = [];
-      failed = [];
-      saveQueue();
-      saveFailed();
-      render();
-    }
-    await runConnect(invite, config);
+    if (!drop) { await runConnect(invite, config); return; }
+
+    /* Explicit discard — the only way past unsynced writes. The writes are
+       NOT thrown away first: a link that turns out not to work would have
+       destroyed them for nothing. They are held, the connection is proved,
+       and only a successful switch drops them (the wipe usually does it; a
+       same-ledger switch needs their optimistic rows undone by hand so the
+       cache stops showing entries the sheet has never heard of). */
+    const dropped = queue.concat(failed);
+    const ok = await runConnect(invite, config);
+    if (!ok) return;                              // link failed: the stash is untouched
+    if (!queue.length && !failed.length) return;  // the wipe already took them
+    queue = [];
+    failed = [];
+    dropped.reverse().forEach(rollbackWrite);
+    saveQueue();
+    saveFailed();
+    saveCache();
+    render();
   });
   $('switch-sync').addEventListener('click', () => {
     $('dlg-switch').close();
@@ -1450,9 +1624,31 @@ function init() {
     $('set-template').value = config.template || DEFAULT_TEMPLATE;
     $('set-url').value = config.url || '';
     $('set-key').value = config.key || '';
-    document.querySelector('.settings-conn').open = false;
+    const conn = document.querySelector('.settings-conn');
+    conn.open = false;
+    // Demo has no connection to edit — the fields used to be there and their
+    // Save was silently ignored. The one real action is offered instead.
+    conn.hidden = !!config.demo;
+    $('settings-demo').hidden = !config.demo;
     $('invite-wrap').hidden = !!config.demo || !config.url;
     showSheet($('dlg-settings'));
+  });
+  // Leave the demo without destroying it: the sample khata stays on the phone
+  // so "Try the demo" comes back to the same numbers.
+  $('btn-leave-demo').addEventListener('click', () => {
+    $('dlg-settings').close();
+    [LS_CONFIG, LS_CACHE, LS_QUEUE, LS_FAILED, LS_THUMBS].forEach((k) => localStorage.removeItem(k));
+    config = null;
+    db = { users: [], transactions: [] };
+    queue = [];
+    failed = [];
+    currentCustomerId = null;
+    render();
+    connectNote('');
+    $('connect-error').hidden = true;
+    $('cfg-url').value = '';
+    $('cfg-key').value = '';
+    show('connect');
   });
   // The dangerous link. The warning lands on the *first* tap — before the copy
   // exists — not as a 3.2s toast after it is already in the clipboard (1.1).
@@ -1468,13 +1664,25 @@ function init() {
     config.currency = $('set-currency').value.trim() || '₹';
     config.cc = $('set-cc').value.replace(/\D/g, '') || '91';
     config.template = $('set-template').value || DEFAULT_TEMPLATE;
+    /* Editing the URL or the key here IS switching ledgers — it was the one
+       door into a different khata with no validation, no confirm, no wipe,
+       and it drained this khata's queue into the other sheet. It goes through
+       exactly the same guard as an invite link now. */
+    let switchTo = null;
     if (!config.demo) {
-      config.url = $('set-url').value.trim();
-      config.key = $('set-key').value.trim();
+      const url = $('set-url').value.trim();
+      const key = $('set-key').value.trim();
+      if (url !== (config.url || '') || key !== (config.key || '')) switchTo = { u: url, k: key };
     }
-    saveJSON(LS_CONFIG, config);
+    saveJSON(LS_CONFIG, config);   // preferences only — never the new credentials
     render();
-    toast('Settings saved');
+    if (!switchTo) { toast('Settings saved'); return; }
+    if (connecting) {   // another connection is already being checked
+      toast('Ek connection pehle se check ho raha hai — thodi der baad', true);
+      return;
+    }
+    // after this dialog has actually closed (method="dialog" closes it for us)
+    setTimeout(() => openInvite(switchTo), 0);
   });
   $('btn-disconnect').addEventListener('click', (e) => {
     if (!armConfirm(e.currentTarget, 'disconnect')) return;
@@ -1504,7 +1712,7 @@ function init() {
     if (th && th.dataset.pid) { viewPhotoById(th.dataset.pid, false); return; }
     const row = e.target.closest('.txn-row');
     if (!row) return;
-    const t = db.transactions.find((x) => x.id === row.dataset.id);
+    const t = db.transactions.find((x) => String(x.id) === String(row.dataset.id));
     if (t) openTxnForm(t.type, t);
   });
 
@@ -1558,7 +1766,16 @@ function init() {
     if (photoState.mode === 'removed') payload.photo = '';
 
     if (editingTxnId) {
-      const t = db.transactions.find((x) => x.id === editingTxnId);
+      const t = db.transactions.find((x) => String(x.id) === String(editingTxnId));
+      // The entry can go away underneath an open dialog (a refresh, a switch,
+      // a rolled-back write). Say so in the form instead of throwing — the
+      // dialog is method="dialog" and would close on a thrown edit, silently.
+      if (!t) {
+        e.preventDefault();
+        errEl.textContent = 'Yeh entry ab yahan nahi hai — band karke dobara kholein.';
+        errEl.hidden = false;
+        return;
+      }
       const pre = clone(t);   // rollback pre-image, taken before we overwrite it
       const localPhoto = photoState.mode === 'new' ? 'pending'
         : photoState.mode === 'removed' ? '' : (t.photo || '');
@@ -1572,7 +1789,7 @@ function init() {
         enqueue('updateTxn', { id: editingTxnId, data: payload }, null, { type: 'txn', txn: pre });
       }
     } else {
-      const tmpId = 'tmp' + Date.now();
+      const tmpId = tmpTxnId();
       // local copy carries a marker, never the photo bytes (those live in the queue payload)
       const localTxn = Object.assign({ id: tmpId, user_name: payload.user_id }, payload);
       localTxn.photo = photoState.mode === 'new' ? 'pending' : '';
@@ -1587,17 +1804,23 @@ function init() {
     if (!armConfirm(e.currentTarget, 'del-txn:' + editingTxnId)) return;
     $('dlg-txn').close();
     const id = editingTxnId;
-    const pre = clone(db.transactions.find((x) => x.id === id));
-    db.transactions = db.transactions.filter((x) => x.id !== id);
+    const pre = clone(db.transactions.find((x) => String(x.id) === String(id)));
+    if (!pre) { toast('Yeh entry ab yahan nahi hai', true); return; }
+    db.transactions = db.transactions.filter((x) => String(x.id) !== String(id));
+    // an add that is already on the wire is NOT droppable — the row is about
+    // to exist in the sheet, so this becomes a real deleteTxn (its payload id
+    // is remapped to the server id when the add lands)
     const queuedAdd = isTmp(id) && queuedAddFor(id);
+    const ledger = ledgerGen;
     let undoDelete;
     if (queuedAdd) {
       // Never reached the sheet — dropping its queued add *is* the delete, so
       // undo is simply putting that item (and the row) back.
       const at = queue.indexOf(queuedAdd);
-      queue = queue.filter((item) => item !== queuedAdd);
+      dropQueued(queuedAdd);
       saveQueue();
       undoDelete = () => {
+        if (ledger !== ledgerGen) return;   // different khata now — nothing to put back
         queue.splice(Math.min(at, queue.length), 0, queuedAdd);
         saveQueue();
         restoreTxn(pre);
@@ -1608,7 +1831,8 @@ function init() {
       const queued = queue[queue.length - 1];
       const del = queued && queued.action === 'deleteTxn' && queued.payload.id === id ? queued : null;
       undoDelete = () => {
-        const i = del ? queue.indexOf(del) : -1;
+        if (ledger !== ledgerGen) return;
+        const i = del && !del.inflight ? queue.indexOf(del) : -1;
         if (i >= 0) { queue.splice(i, 1); saveQueue(); restoreTxn(pre); }   // still queued: purely local
         else readdTxn(pre);                                                 // already gone upstream: re-create
       };
@@ -1660,7 +1884,13 @@ function init() {
     const phone = checked.value;
     $('cust-input-phone').value = phone;
     if (editingCustomerId) {
-      const u = db.users.find((x) => x.user_id === editingCustomerId);
+      const u = db.users.find((x) => String(x.user_id) === String(editingCustomerId));
+      if (!u) {   // gone underneath the open dialog — say so, never throw
+        e.preventDefault();
+        errEl.textContent = 'Yeh customer ab yahan nahi hai — band karke dobara kholein.';
+        errEl.hidden = false;
+        return;
+      }
       const pre = clone(u);   // rollback pre-image, taken before we overwrite it
       Object.assign(u, { name, phone });
       const queuedAdd = isTmp(editingCustomerId) && queuedAddFor(editingCustomerId);
@@ -1673,7 +1903,7 @@ function init() {
           { type: 'user', user: pre });
       }
     } else {
-      const tmpId = 'tmpu' + Date.now();
+      const tmpId = tmpUserId();
       // _created: the sheet's created_at has no time, so today's new customer
       // ties with today's transactors and loses. Local ms breaks the tie (0.8).
       db.users.push({ user_id: tmpId, name, phone, created_at: todayISO(), token: '', _created: Date.now() });
@@ -1689,15 +1919,17 @@ function init() {
     $('dlg-customer').close();
     const id = editingCustomerId;
     // pre-image for rollback: the customer AND every entry that goes with them
-    const preUser = clone(db.users.find((x) => x.user_id === id));
+    const preUser = clone(db.users.find((x) => String(x.user_id) === String(id)));
     const preTxns = clone(db.transactions.filter((x) => String(x.user_name) === String(id)));
-    db.users = db.users.filter((x) => x.user_id !== id);
-    db.transactions = db.transactions.filter((x) => x.user_name !== id);
+    db.users = db.users.filter((x) => String(x.user_id) !== String(id));
+    db.transactions = db.transactions.filter((x) => String(x.user_name) !== String(id));
     const queuedAdd = isTmp(id) && queuedAddFor(id);
     if (queuedAdd) {
-      // never reached the server — drop its add and any queued entries for it
-      queue = queue.filter((item) => item !== queuedAdd &&
-        !(item.payload && item.payload.data && item.payload.data.user_id === id));
+      // Never reached the server — drop its add and any queued entries for it.
+      // An item already on the wire is left alone: it is going to land, and
+      // the deleteUser/deleteTxn behind it is what undoes it.
+      queue = queue.filter((item) => item.inflight || (item !== queuedAdd &&
+        !(item.payload && item.payload.data && item.payload.data.user_id === id)));
       saveQueue();
     } else {
       enqueue('deleteUser', { id }, null,
@@ -1731,14 +1963,19 @@ function init() {
   window.addEventListener('online', () => { setOffline(false); processQueue(); });
   window.addEventListener('offline', () => setOffline(true));
 
+  // a link tapped while the app is already open (installed PWAs stay alive for
+  // days) is same-document navigation — only hashchange ever hears about it
+  window.addEventListener('hashchange', () => { dispatchLink(); });
+
+  // the merchant's own way out of a customer's passbook (audit 1.1)
+  $('pb-mine-go').addEventListener('click', () => {
+    stripHash();
+    $('pb-mine').hidden = true;
+    bootLedger();
+  });
+
   // boot — a passbook link is a customer view; an invite link is a merchant connection
-  if (applyPassbookLink()) {
-    // read-only mode: nothing else to wire
-  } else {
-    const invite = parseInviteLink();
-    if (invite) openInvite(invite);   // async: validates before it believes the link
-    else bootLedger();
-  }
+  if (!dispatchLink()) bootLedger();
 
   // Ask the browser to never evict our storage (config, cache, queue, thumbs).
   // Chrome auto-grants this for installed PWAs — no prompt.
@@ -1766,17 +2003,26 @@ function init() {
   }
 }
 
+/* Both copy buttons live inside a modal dialog, and everything outside the top
+   dialog is inert — a textarea parked on document.body cannot be selected, so
+   the fallback silently copied nothing while the caller cheerfully toasted
+   "copy ho gaya". It goes inside whatever is on top, and a refusal is
+   reported as one. */
 function copyText(text) {
   if (navigator.clipboard && navigator.clipboard.writeText) {
     return navigator.clipboard.writeText(text);
   }
   const ta = document.createElement('textarea');
   ta.value = text;
-  document.body.appendChild(ta);
+  ta.setAttribute('readonly', '');
+  ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none';
+  overlayHost().appendChild(ta);
   ta.select();
-  document.execCommand('copy');
+  ta.setSelectionRange(0, ta.value.length);
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
   ta.remove();
-  return Promise.resolve();
+  return ok ? Promise.resolve() : Promise.reject(new Error('copy nahi hua'));
 }
 
 // Direction is the one thing a merchant most often taps wrong, and the two

@@ -779,6 +779,9 @@ body {
   padding: 24px 0;
 }
 
+/* the merchant's own way out of a customer's passbook */
+.pb-mine { text-align: center; margin-top: 20px; }
+
 .pb-foot {
   text-align: center;
   font-size: 0.8rem;

@@ -59,6 +59,10 @@ export async function openCustomer(page, name) {
   await expect(page.locator('#screen-customer')).toBeVisible();
 }
 
+/* How many writes are still waiting to reach the sheet. */
+export const queueLen = (page) =>
+  page.evaluate(() => JSON.parse(localStorage.getItem('bahi.queue') || '[]').length);
+
 /* Add an entry from the customer screen. */
 export async function addEntry(page, { type = 'given', amount, note }) {
   await page.locator(type === 'given' ? '#btn-gave' : '#btn-got').click();

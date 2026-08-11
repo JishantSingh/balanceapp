@@ -56,14 +56,12 @@ test('switching to a different ledger asks first, then leaves nothing behind', a
   expect(await lsJSON(page, 'bahi.demo')).toBe(null);
 });
 
-test('a key refresh with unsynced writes is treated as a foreign ledger', async ({ page }) => {
-  // NOTE: possible bug — this is the SAME khata, reached by the SAME URL, with
-  // a new key. The queued entry belongs to it and the new key is exactly what
-  // would let it through. The app nonetheless warns it would land "galat khaate
-  // me" and offers only "Hata kar jodein", which throws the entry away for good
-  // (connectTo() then correctly skips the wipe, because the ledger never
-  // changed). The lossless route — Settings → Connection → paste the new key —
-  // is not offered anywhere on this path. Asserted as it behaves today.
+test('a key refresh with unsynced writes keeps every write and sends it with the new key', async ({ page }) => {
+  /* The same khata, reached by the same URL, with a refreshed key. The queued
+     entry belongs to this ledger and the new key is exactly what lets it
+     through — so there is nothing here to warn about and nothing to discard.
+     (This used to show the wrong-khata warning, whose only way forward threw
+     the entry away for good.) */
   const backend = createBackend(seedLedger());
   await openLedger(page, backend);
   await openCustomer(page, 'Ramu Halwai');
@@ -74,20 +72,47 @@ test('a key refresh with unsynced writes is treated as a foreign ledger', async 
   await expect(page.locator('#chip-pending')).toContainText('1');
 
   backend.setMode('ok');
-  backend.state.key = 'rotated';
+  backend.state.key = 'rotated';           // merchant re-deployed with a new secret
   await page.goto('/?again=1' + inviteHash(backend, 'rotated'));
 
-  // the old key refuses the queued entry on boot, parking it in the failed list
-  await expect(page.locator('#chip-failed')).toContainText('1');
+  await expect(page.locator('#toast')).toContainText('Nayi key lag gayi');
+  await expect(page.locator('#dlg-switch')).toBeHidden();   // no warning: same khata
+  await expect.poll(async () => (await lsJSON(page, 'bahi.config')).key).toBe('rotated');
+
+  // the entry the old key could not deliver goes through with the new one
+  await expect.poll(() => backend.state.transactions.some((t) => t.amount === 555)).toBe(true);
+  await expect(page.locator('#chip-pending')).toBeHidden();
+  await expect(page.locator('#chip-failed')).toBeHidden();
+  await openCustomer(page, 'Ramu Halwai');
+  await expect(page.locator('.txn-row', { hasText: '555' })).toBeVisible();
+});
+
+test('discarding unsynced writes for a link that turns out to be dead keeps them', async ({ page }) => {
+  /* "Hata kar jodein" is the only way past unsynced writes, and it used to
+     clear the queue *before* the new link had proved it works: a typo, an
+     expired deployment, no signal — the writes were destroyed for nothing.
+     They are held until the connection is real. */
+  const backend = createBackend(seedLedger());
+  await openLedger(page, backend);
+  await openCustomer(page, 'Ramu Halwai');
+
+  backend.setMode('down');                 // the entry stays on the phone…
+  await addEntry(page, { type: 'given', amount: 555 });
+  await page.locator('#btn-back').click();
+  await expect(page.locator('#chip-pending')).toContainText('1');
+
+  // …and the invite for the other khata cannot be validated either
+  await page.goto('/?ledger=b' + inviteHashFor(OTHER_EXEC, 'otherkey'));
   await expect(page.locator('#dlg-switch')).toBeVisible();
   await expect(page.locator('#switch-go')).toHaveText('Hata kar jodein');
   await page.locator('#switch-go').click();
 
-  // the discard is synchronous; the reconnect behind it is not
-  await expect.poll(async () => (await lsJSON(page, 'bahi.config')).key).toBe('rotated');
-  await expect(page.locator('#chip-failed')).toBeHidden();
-  await expect(page.locator('#chip-pending')).toBeHidden();
-  expect(backend.state.transactions.some((t) => t.amount === 555)).toBe(false);
+  await expect(page.locator('#toast')).toContainText('purana khata waisa hi hai');
+  await expect(page.locator('#chip-pending')).toContainText('1');       // not destroyed
+  expect(await lsJSON(page, 'bahi.queue')).toHaveLength(1);
+  expect((await lsJSON(page, 'bahi.config')).url).toBe(MOCK_EXEC);
+  await openCustomer(page, 'Ramu Halwai');
+  await expect(page.locator('.txn-row', { hasText: '555' })).toBeVisible();
 });
 
 test('an invite arriving on top of unsynced writes must refuse to switch quietly', async ({ page }) => {
