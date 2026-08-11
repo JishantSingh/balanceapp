@@ -43,7 +43,7 @@ All Phase-0 red tests green · no previously-green test broken · manual pass on
 
 ## Sprint 3 — "PIN Suraksha" (SHIPPED 12 Aug 2026)
 
-Backend v7 (011e080) live on the test deployment via the self-updater (6→7 in one POST, no repaste); frontend (660f7d3) live, cache v17; suite 73 specs green. Master PIN minted into the owner's Script Properties on first v7 sync — read at Apps Script → Project Settings → Script Properties → `adminPin`. Owner's remaining step: Settings → 🔒 Suraksha → "App PIN lagayein" with the Master PIN. Parked items shipped alongside: token revoke (sentinel 'off') + sheetUrl in list + "Meri Google Sheet kholein" in Settings. Original design below.
+Backend v8 live (7→8 via self-updater; v8 = idempotent queue writes after the 12 Aug duplicate-entry incident: cid dedup on adds, already:true deletes); frontend cache v19; suite 78 specs green. Master PIN minted into the owner's Script Properties on first v7 sync — read at Apps Script → Project Settings → Script Properties → `adminPin`. Owner's remaining step: Settings → 🔒 Suraksha → "App PIN lagayein" with the Master PIN. Parked items shipped alongside: token revoke (sentinel 'off') + sheetUrl in list + "Meri Google Sheet kholein" in Settings. Original design below.
 
 ### Original design (decisions locked 12 Aug 2026)
 
