@@ -13,7 +13,10 @@
 - **Parked with decisions recorded:** scheduled reminders (#1), config sheet tab (#12).
 - Product decisions + research live in [FEATURES.md](FEATURES.md); artifacts: feature plan `claude.ai/code/artifact/7a53ebbc-…`, research memo `…/2ee5a4f8-…`, this doc `…/398d125b-…`.
 
-## Sprint 2 — "Nothing lies, nothing lost" (planned 11 Aug 2026, awaiting go)
+## Sprint 2 — "Nothing lies, nothing lost" (in progress 11 Aug 2026)
+
+**Status:** Phase 0 shipped (19-spec Playwright harness + mock backend + CI, commit 1133468). WP-A shipped (f61ba98). WP-B shipped (6431c07). WP-C in flight. Owner asleep; Fable running the night shift with Opus workers per owner's standing instruction ("use Opus generously for correctness and quality").
+
 
 Fix every Tier 0 + Tier 1 finding from [UX-AUDIT.md](UX-AUDIT.md), with an E2E test harness built FIRST so the fixes land against red tests and the offline queue can't silently regress.
 
