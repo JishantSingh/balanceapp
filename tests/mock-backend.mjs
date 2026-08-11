@@ -1,19 +1,37 @@
-/* In-process mock of the Bahi Apps Script backend (Code.gs v6 contract).
+/* In-process mock of the Bahi Apps Script backend (Code.gs v7 contract).
    Installed per-test via Playwright request routing, so every test gets an
    isolated "deployment" with its own sheet state and failure mode.
 
    Mirrors the real contract:
-   - GET  ?action=list&key=…            → {ok, data:{users, transactions, v}}
+   - GET  ?action=list&key=…            → {ok, data:{users, transactions, v,
+                                            pin, sheetUrl}}
    - POST text/plain JSON {action,key,…} → per-action data (full user / full txn)
    - errors are HTTP 200 with {ok:false, error} (Apps Script never 4xxs)
    Failure modes: 'ok' | 'badkey' | 'html' (sign-in page) | 'down' (network).
+
+   Version skew: `createBackend({ v: 6 })` answers like a pre-Suraksha backend
+   — `list` OMITS `pin` and `sheetUrl` entirely (the frontend feature-detects
+   on the FIELD's absence, so leaving them null would not exercise the
+   fallback) and `setTxnPin` comes back "Unknown action", exactly as a real v6
+   deployment's switch default does.
 
    Deliberately NOT emulated: Apps Script's 302 redirect dance. The browser
    follows redirects inside the network stack — below any app code — and
    Playwright cannot intercept the redirect hop, so emulating it tests
    nothing of ours and leaks requests to the real googleusercontent.com. */
 
+import { createHash } from 'node:crypto';
+
 export const MOCK_EXEC = 'https://script.google.com/macros/s/MOCKDEPLOY/exec';
+export const MOCK_SHEET_URL = 'https://docs.google.com/spreadsheets/d/MOCKSHEET/edit';
+
+/* Code.gs stores sha256(salt + ':' + pin) as lowercase hex; identical bytes
+   here (verified against Utilities.computeDigest's signed-byte hex mapping). */
+export const pinHash = (salt, pin) => createHash('sha256').update(salt + ':' + pin).digest('hex');
+
+/* A revoked passbook link keeps this sentinel in the token cell — a blank cell
+   would be re-issued by backfillTokens on the next list. See Code.gs. */
+export const REVOKED_TOKEN = 'off';
 
 export function seedLedger() {
   return {
@@ -32,11 +50,14 @@ export function createBackend(opts = {}) {
   const state = {
     key: opts.key ?? 'testkey',
     url: opts.url ?? MOCK_EXEC,  // which deployment this one answers for
-    v: 6,
+    v: opts.v ?? 7,              // set 6 to simulate a pre-Suraksha backend
     mode: 'ok',
     users: opts.users ?? [],
     transactions: opts.transactions ?? [],
     photos: opts.photos ?? {},   // photoId -> b64
+    adminPin: opts.adminPin ?? '123456',  // Master PIN; never leaves the server
+    pin: opts.pin ?? null,       // App PIN: null | {salt, hash}
+    sheetUrl: opts.sheetUrl ?? MOCK_SHEET_URL,
     log: [],                     // every {action} handled, for assertions
     requests: [],                // every request URL that arrived, gated or not
   };
@@ -54,7 +75,7 @@ export function createBackend(opts = {}) {
     state.log.push(req.action);
     if (req.action === 'passbook') {
       const t = String(req.token || '');
-      if (t.length < 12) return err('Invalid passbook link');
+      if (t.length < 12 || t === REVOKED_TOKEN) return err('Invalid passbook link');
       const u = state.users.find((x) => same(x.token, t));
       if (!u) return err('This passbook link is no longer valid');
       return ok({
@@ -68,8 +89,15 @@ export function createBackend(opts = {}) {
       return err('Unauthorized: bad or missing key');
     }
     switch (req.action) {
-      case 'list':
-        return ok({ users: state.users, transactions: state.transactions, v: state.v });
+      case 'list': {
+        const data = { users: state.users, transactions: state.transactions, v: state.v };
+        // v7 additions — omitted, not nulled, on older backends.
+        if (state.v >= 7) {
+          data.pin = state.pin;
+          data.sheetUrl = state.sheetUrl;
+        }
+        return ok(data);
+      }
       case 'addUser': {
         const u = {
           user_id: newId('u'), name: String(req.data.name || '').trim(),
@@ -84,6 +112,12 @@ export function createBackend(opts = {}) {
         const u = state.users.find((x) => same(x.user_id, req.id));
         if (!u) return err('User not found');
         Object.assign(u, { name: req.data.name ?? u.name, phone: req.data.phone ?? u.phone });
+        // Passbook revoke/re-issue: '' revokes, and is stored as the sentinel
+        // (a blank cell would be re-issued by the real backend's backfill).
+        if (req.data.token !== undefined) {
+          const t = String(req.data.token).trim();
+          u.token = t === '' ? REVOKED_TOKEN : t;
+        }
         return ok(u);
       }
       case 'deleteUser':
@@ -126,6 +160,17 @@ export function createBackend(opts = {}) {
         const u = state.users.find((x) => same(x.user_id, req.id));
         if (u) u.last_reminded = new Date().toISOString().slice(0, 10);
         return ok({ logged: true });
+      }
+      case 'setTxnPin': {
+        // A pre-Suraksha backend has no such case — it hits its switch default.
+        if (state.v < 7) return err('Unknown action: ' + req.action);
+        if (String(req.admin ?? '') !== state.adminPin) return err('Master PIN galat hai');
+        const p = String(req.pin ?? '');
+        if (p === '') { state.pin = null; return ok({ set: false }); }
+        if (!/^\d{4}$/.test(p)) return err('PIN 4 ank ka hona chahiye');
+        const salt = ('ffee' + String(++n).padStart(12, '0'));  // 16 hex, like longId()
+        state.pin = { salt, hash: pinHash(salt, p) };
+        return ok({ set: true });
       }
       default:
         return err('Unknown action: ' + req.action);

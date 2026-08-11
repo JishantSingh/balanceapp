@@ -1,5 +1,5 @@
 /**
- * Bahi — Google Sheets backend API (Khatabook-style udhaar ledger) · v6
+ * Bahi — Google Sheets backend API (Khatabook-style udhaar ledger) · v7
  *
  * Sheets (columns are created/added automatically):
  *   "user":        user_id | name | created_at | phone | cohort | last_reminded | token
@@ -8,10 +8,20 @@
  *     - "type" is "given" (udhaar) or "received" (payment)
  *     - "cohort" is a reminder frequency: off | weekly | 15days | monthly
  *     - "token" is a per-customer secret for the read-only passbook link
+ *       ("off" = link deliberately revoked; see REVOKED_TOKEN below)
  *     - "photo" is a Drive file id of an attached bill photo
  *
  * Photos are stored in a "Bahi Photos" folder in YOUR Drive and served only
  * through this API (key required) — they are never made public.
+ *
+ * Script Properties this file owns (all survive self-updates):
+ *   apiKey       — the API key (never in the code)
+ *   adminPin     — 6-digit Master PIN ("Suraksha"); authorizes App-PIN changes.
+ *                  NEVER returned by any API action — read it here in the
+ *                  editor (Project Settings → Script Properties) if lost.
+ *   txnPinSalt   — 16-hex salt for the 4-digit App PIN
+ *   txnPinHash   — sha256(salt + ':' + pin), lowercase hex. Ships in `list`
+ *                  so every device sharing the ledger can verify offline.
  *
  * Setup:
  *  1. Spreadsheet → Extensions → Apps Script; paste this file into Code.gs.
@@ -47,9 +57,29 @@ function apiKey_() {
   return k;
 }
 
+/** The Master PIN (Suraksha): 6 digits, minted once, kept only in Script
+ *  Properties. It authorizes setting/changing/removing the 4-digit App PIN and
+ *  is never returned by any action — losing it means reading the property in
+ *  the editor, which is exactly the escape hatch we want (only the sheet's
+ *  owner can do that). */
+function adminPin_() {
+  const props = PropertiesService.getScriptProperties();
+  let p = props.getProperty('adminPin');
+  if (!p) {
+    // Utilities.getUuid() is a type-4 UUID off Java's SecureRandom — a CSPRNG,
+    // unlike Math.random(). The last 12 hex chars carry no version/variant
+    // bits, so they're 48 fully random bits (still an exact double); folding
+    // them to six digits biases the low values by ~1 part in 2.8e8.
+    const hex = Utilities.getUuid().replace(/-/g, '').slice(-12);
+    p = ('00000' + (parseInt(hex, 16) % 1000000)).slice(-6);
+    props.setProperty('adminPin', p);
+  }
+  return p;
+}
+
 // Backend version + where released code is published. The self-updater
 // refuses anything whose hashes don't match the release manifest.
-const BAHI_VERSION = 6;
+const BAHI_VERSION = 7;
 const RELEASE_BASE = 'https://raw.githubusercontent.com/JishantSingh/balanceapp/main/apps-script/';
 const RELEASE_MANIFEST = RELEASE_BASE + 'release.json';
 
@@ -59,6 +89,14 @@ const TXN_SHEET = 'transaction';
 const TXN_HEADERS = ['id', 'user_name', 'date', 'type', 'amount', 'comment', 'photo'];
 const PHOTO_FOLDER = 'Bahi Photos';
 const MAX_PHOTO_B64 = 2 * 1024 * 1024; // ~1.5MB image
+
+/** Sentinel written into a customer's `token` cell when their passbook link is
+ *  revoked. It cannot be blank: backfillTokens() mints a token for every row
+ *  whose cell is empty, so an emptied cell would be silently re-issued on the
+ *  very next `list` — revocation has to look "already set" to the backfill and
+ *  invalid to `passbook`. "off" is both (and matches the cohort vocabulary).
+ *  Real tokens are 16 hex chars, so no token can ever collide with it. */
+const REVOKED_TOKEN = 'off';
 
 function doGet(e) {
   return handle(e.parameter || {});
@@ -108,6 +146,8 @@ function handle(req) {
         return respond({ ok: true, data: getPhoto(req.id) });
       case 'remindLog':
         return respond({ ok: true, data: withLock(remindLog, req.id) });
+      case 'setTxnPin':
+        return respond({ ok: true, data: withLock(setTxnPin, req.admin, req.pin) });
       case 'update':
         return respond({ ok: true, data: checkForUpdate() });
       default:
@@ -190,14 +230,29 @@ function listRows(sheet, headers) {
 
 function listAll() {
   backfillTokens();
+  adminPin_(); // mint on first sync: deployments upgraded by the self-updater
+               // never re-run setup(), and the owner must be able to find the
+               // Master PIN in Script Properties. Never sent to the client.
   const users = listRows(userSheet(), USER_HEADERS);
   const txns = listRows(txnSheet(), TXN_HEADERS);
   users.forEach(function (u) { delete u._row; });
   txns.forEach(function (t) { delete t._row; });
-  return { users: users, transactions: txns, v: BAHI_VERSION };
+  return {
+    users: users,
+    transactions: txns,
+    v: BAHI_VERSION,
+    // App-PIN material for offline verification on every device sharing this
+    // ledger — salt+hash only, never the PIN. null = no PIN configured.
+    pin: txnPin_(),
+    // "Open my sheet" / trust affordance. getUrl() reads the spreadsheet the
+    // script is bound to, so the existing spreadsheets.currentonly scope
+    // covers it — no manifest change in this release.
+    sheetUrl: SpreadsheetApp.getActiveSpreadsheet().getUrl(),
+  };
 }
 
-// Every customer gets a token so passbook links can be built.
+// Every customer gets a token so passbook links can be built. A revoked link
+// keeps the REVOKED_TOKEN sentinel here, so this never re-issues one.
 function backfillTokens() {
   const sheet = userSheet();
   const map = headerMap(sheet);
@@ -297,6 +352,12 @@ function updateUser(id, data) {
   if (data.name !== undefined) patch.name = String(data.name).trim();
   if (data.phone !== undefined) patch.phone = String(data.phone).trim();
   if (data.cohort !== undefined) patch.cohort = cleanCohort(data.cohort);
+  // Passbook revoke/re-issue. '' means "revoke", which we store as the
+  // REVOKED_TOKEN sentinel rather than a blank cell — see REVOKED_TOKEN.
+  if (data.token !== undefined) {
+    const t = String(data.token).trim();
+    patch.token = t === '' ? REVOKED_TOKEN : t;
+  }
   writeRow(sheet, Object.keys(patch), row, patch);
   return patch;
 }
@@ -336,9 +397,15 @@ function deleteUser(id) {
 // ---------- passbook (read-only, token-gated) ----------
 
 function passbook(token) {
-  if (!token || token.length < 12) throw new Error('Invalid passbook link');
+  // The length floor already excludes the revoke sentinel; it is named here so
+  // the rule survives any future change to either value.
+  if (!token || token.length < 12 || token === REVOKED_TOKEN) {
+    throw new Error('Invalid passbook link');
+  }
   const users = listRows(userSheet(), USER_HEADERS);
-  const match = users.filter(function (u) { return String(u.token) === token; })[0];
+  const match = users.filter(function (u) {
+    return String(u.token) === token && String(u.token) !== REVOKED_TOKEN;
+  })[0];
   if (!match) throw new Error('This passbook link is no longer valid');
   const txns = listRows(txnSheet(), TXN_HEADERS)
     .filter(function (t) { return String(t.user_name) === String(match.user_id); })
@@ -346,6 +413,41 @@ function passbook(token) {
       return { date: t.date, type: t.type, amount: t.amount, comment: t.comment };
     });
   return { name: match.name, transactions: txns };
+}
+
+// ---------- PIN Suraksha (two-tier PIN) ----------
+// Master PIN (adminPin_) authorizes changes to the App PIN, server-side only.
+// The App PIN is 4 digits; we keep a salted SHA-256 of it and ship salt+hash
+// in `list` so every device sharing the ledger verifies OFFLINE — the PIN
+// itself never leaves the device that types it, and never reaches the sheet.
+// Threat model: casual misuse on a shared shop phone (staff/family). Anyone
+// who can read `list` can brute-force 10^4 hashes; this is a lock on a drawer,
+// not a safe, and no UI may claim otherwise.
+
+function txnPin_() {
+  const props = PropertiesService.getScriptProperties();
+  const salt = props.getProperty('txnPinSalt');
+  const hash = props.getProperty('txnPinHash');
+  return (salt && hash) ? { salt: salt, hash: hash } : null;
+}
+
+/** setTxnPin: admin = Master PIN, pin = 4 digits (or '' to remove). */
+function setTxnPin(admin, pin) {
+  if (String(admin === undefined || admin === null ? '' : admin) !== adminPin_()) {
+    throw new Error('Master PIN galat hai');
+  }
+  const props = PropertiesService.getScriptProperties();
+  const p = String(pin === undefined || pin === null ? '' : pin);
+  if (p === '') {
+    props.deleteProperty('txnPinSalt');
+    props.deleteProperty('txnPinHash');
+    return { set: false };
+  }
+  if (!/^\d{4}$/.test(p)) throw new Error('PIN 4 ank ka hona chahiye');
+  const salt = longId(); // fresh every set — changing the PIN re-salts
+  props.setProperty('txnPinSalt', salt);
+  props.setProperty('txnPinHash', sha256Hex_(salt + ':' + p));
+  return { set: true };
 }
 
 // ---------- transactions ----------
@@ -479,7 +581,9 @@ function setup() {
   }
   const msg = 'Bahi v' + BAHI_VERSION + ' ready — auto-update ' +
     (auto ? 'is ON' : 'OFF (standard mode; see SETUP.md to enable)') +
-    '. API key: ' + apiKey_();
+    '. API key: ' + apiKey_() +
+    ' · Master PIN (Suraksha): ' + adminPin_() +
+    ' — likh kar rakhein; app me kabhi store nahi hota';
   console.log(msg);
   return msg;
 }
