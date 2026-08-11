@@ -73,6 +73,19 @@ Goal: ship the test user's approved requests, minus reminders (parked → backlo
 
 Out of scope for Sprint 1: everything below.
 
+## Next: Reliability audit (queued 12 Aug 2026, runs after the idempotency fix ships)
+
+Owner's call after the duplicate-entry incident: analyze the production-quality dimensions the UX audit never covered — the incident class, not the incident. Scope, each dimension traced against the REAL code + Apps Script platform limits (not textbook generalities):
+
+1. **Atomicity & transaction semantics** — multi-step operations with no transaction boundary (deleteUser = row + N txn rows + photo trashes; queue drains applying items one at a time; partial failure mid-sequence). What states can a crash/timeout leave the sheet in, and does reconciliation heal them?
+2. **Concurrency** — two devices share one ledger BY DESIGN (invite links). Interleaved queue drains, last-write-wins updateTxn with no versioning, LockService's actual guarantees (per-request mutex only), backfillTokens racing writes, same-entry edits from two phones.
+3. **Failure & retry** — the v8 cid dedup's honest limits (CacheService is best-effort and CAN evict early; 6h window), retry ordering, updateTxn retries, photo-upload partial failures, the taxonomy of ambiguous outcomes and which are still unsafe.
+4. **Durability & reconciliation** — localStorage/IDB quota exhaustion states, refresh-clobber rules vs pending queues, server-truth vs optimistic-local invariants, device clock skew in dates.
+5. **Scale & quotas** — full-table list on every sync (O(n) growth: where does it hurt — 1k? 10k txns?), Apps Script execution-time/UrlFetch/trigger quotas, sheet cell limits, photo folder growth.
+6. **Backup & recovery** — Google Sheets revision history as the free backup story (document + test a restore); what ISN'T covered (Drive photos, Script Properties).
+
+Deliverable: RELIABILITY.md — ranked findings (exploitability × blast radius), each with a concrete fix and effort, plus an explicit "accepted risks" list (free-tier physics we choose to live with, stated honestly). Method: parallel Opus analysts per dimension + adversarial verification of the scary claims, same machinery as UX-AUDIT.md.
+
 ## Backlog (ordered)
 
 1. **Scheduled reminders — cohorts + due queue + guided "Send all"** *(parked 10 Aug 2026)*. Per-customer frequency (Off/Weekly/15 days/Monthly, default Monthly), "🔔 N due" strip, guided send-back-next run stamping `last_reminded`. Decisions and WhatsApp constraints already settled (no free auto-send; WhatsApp-Web automation rejected — ToS/ban risk + needs a server; official Business API only ever as merchant-pays opt-in). Backend fields (`cohort`, `last_reminded`, `remindLog`) ship dormant in v3 — building this later is frontend-only.
