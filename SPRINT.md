@@ -13,9 +13,9 @@
 - **Parked with decisions recorded:** scheduled reminders (#1), config sheet tab (#12).
 - Product decisions + research live in [FEATURES.md](FEATURES.md); artifacts: feature plan `claude.ai/code/artifact/7a53ebbc-…`, research memo `…/2ee5a4f8-…`, this doc `…/398d125b-…`.
 
-## Sprint 2 — "Nothing lies, nothing lost" (in progress 11 Aug 2026)
+## Sprint 2 — "Nothing lies, nothing lost" (SHIPPED 11-12 Aug 2026)
 
-**Status:** Phase 0 shipped (19-spec Playwright harness + mock backend + CI, commit 1133468). WP-A shipped (f61ba98). WP-B shipped (6431c07). WP-C in flight. Owner asleep; Fable running the night shift with Opus workers per owner's standing instruction ("use Opus generously for correctness and quality").
+**All Tier 0 + Tier 1 audit findings fixed, plus a hardening round.** Commits: Phase 0 harness 1133468 → WP-A f61ba98 → WP-B 6431c07 → WP-C 5a545d1 → coverage 38 specs f447ebb → hardening 0b4df80. Suite: **55 specs, all green**, every fix mutation-verified (specs fail against pre-fix code). The hardening round came from an adversarial review of the combined diff, which found 2 criticals + 6 highs the per-package tests missed — root theme: all three packages assumed no global-state mutation across an `await` (queue shift vs concurrent delete; config swap during invite validation; Settings as an unguarded ledger switch). Full findings preserved in the review round's commit message and UX-AUDIT.md. Design note: invite `#s=` fragments are stripped from the URL (full-access credential); passbook `#p=` fragments are deliberately KEPT (customer's only re-entry path, scoped + revocable).
 
 
 Fix every Tier 0 + Tier 1 finding from [UX-AUDIT.md](UX-AUDIT.md), with an E2E test harness built FIRST so the fixes land against red tests and the offline queue can't silently regress.
