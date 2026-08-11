@@ -15,9 +15,12 @@ import { fileURLToPath } from 'node:url';
 
 const dir = dirname(fileURLToPath(import.meta.url));
 
+// Releases are consumed ONLY by self-updating (auto-update mode) backends,
+// so the manifest we ship is the six-scope autoupdate variant. Standard
+// installs use apps-script/appsscript.json and update manually.
 const files = [
   { name: 'Code', type: 'SERVER_JS', path: 'Code.gs' },
-  { name: 'appsscript', type: 'JSON', path: 'appsscript.json' },
+  { name: 'appsscript', type: 'JSON', path: 'appsscript-autoupdate.json' },
 ];
 
 const code = readFileSync(join(dir, 'Code.gs'), 'utf8');

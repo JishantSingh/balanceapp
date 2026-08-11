@@ -29,7 +29,9 @@ There is no central server, no company in the middle, and nothing to pay — eve
 - **Demo mode** with sample data — try the whole app without any setup
 - Compatible with the existing AppSheet "Ledger" sheet schema (`user` + `transaction` sheets) — old data keeps working
 
-## Merchant setup (~10 minutes, once)
+## Merchant setup (~20 minutes, once)
+
+> **📖 The canonical, step-by-step onboarding guide is [SETUP.md](SETUP.md)** — written for the helper doing the setup, with verification checkpoints, the optional self-updating backend mode, and a troubleshooting table of real errors. The outline below is the short version; when they disagree, SETUP.md wins.
 
 ### 1. The Google Sheet
 

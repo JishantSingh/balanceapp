@@ -1,17 +1,17 @@
 {
-  "version": 5,
-  "released": "2026-08-10",
+  "version": 6,
+  "released": "2026-08-11",
   "files": [
     {
       "name": "Code",
       "type": "SERVER_JS",
       "path": "Code.gs",
-      "sha256": "f8ee739dc5c9d40081f204ec5d06d705038a598e6489354580c2edf0f30fb1c2"
+      "sha256": "bf2737f98ded36141189465ec8f50763fc7b8cd2a236b1d752a8d9adcc96a0ec"
     },
     {
       "name": "appsscript",
       "type": "JSON",
-      "path": "appsscript.json",
+      "path": "appsscript-autoupdate.json",
       "sha256": "6bacf752d1eb0e9ed0ac207671604eefc4c718492b97f1e3dcf2439aea5beb69"
     }
   ]

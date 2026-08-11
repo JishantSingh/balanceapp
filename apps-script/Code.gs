@@ -1,5 +1,5 @@
 /**
- * Bahi — Google Sheets backend API (Khatabook-style udhaar ledger) · v5
+ * Bahi — Google Sheets backend API (Khatabook-style udhaar ledger) · v6
  *
  * Sheets (columns are created/added automatically):
  *   "user":        user_id | name | created_at | phone | cohort | last_reminded | token
@@ -49,7 +49,7 @@ function apiKey_() {
 
 // Backend version + where released code is published. The self-updater
 // refuses anything whose hashes don't match the release manifest.
-const BAHI_VERSION = 5;
+const BAHI_VERSION = 6;
 const RELEASE_BASE = 'https://raw.githubusercontent.com/JishantSingh/balanceapp/main/apps-script/';
 const RELEASE_MANIFEST = RELEASE_BASE + 'release.json';
 
@@ -464,13 +464,22 @@ function trashPhoto(fileId) {
 //     permissions).
 
 /** Run me once from the editor after pasting: authorizes everything,
- *  adopts/mints the API key, and installs the daily update check. */
+ *  adopts/mints the API key, and (in auto-update mode) installs the daily
+ *  update check. Standard installs use the narrow manifest, which lacks
+ *  the trigger scope — that's fine, updates are just manual for them. */
 function setup() {
   userSheet();
   txnSheet();
   photoFolder();
-  ensureUpdateTrigger();
-  const msg = 'Bahi v' + BAHI_VERSION + ' ready — auto-update is on. API key: ' + apiKey_();
+  let auto = true;
+  try {
+    ensureUpdateTrigger();
+  } catch (e) {
+    auto = false; // narrow manifest (standard mode) — no trigger scope
+  }
+  const msg = 'Bahi v' + BAHI_VERSION + ' ready — auto-update ' +
+    (auto ? 'is ON' : 'OFF (standard mode; see SETUP.md to enable)') +
+    '. API key: ' + apiKey_();
   console.log(msg);
   return msg;
 }
