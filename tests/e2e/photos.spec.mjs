@@ -12,7 +12,10 @@ test('photo attaches, uploads, thumbnails in the ledger, and opens in the viewer
   await page.locator('#txn-photo').setInputFiles({
     name: 'parchi.png', mimeType: 'image/png', buffer: TINY_PNG,
   });
-  await expect(page.locator('#txn-photo-label')).toHaveText(/added/i);
+  // the captured image itself is the confirmation now
+  await expect(page.locator('#txn-photo-prev')).toBeVisible();
+  await expect(page.locator('#txn-photo-prev')).toHaveAttribute('src', /^data:image\/jpeg/);
+  await expect(page.locator('#txn-photo-label')).toHaveText('Badlein');
   await page.locator('#txn-save').click();
   await expect(page.locator('#dlg-txn')).toBeHidden();
 

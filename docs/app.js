@@ -1356,25 +1356,45 @@ function reminderLink(u, bal) {
 
 // ---------------------------------------------------------------- photos
 
-function compressImage(file) {
+async function compressImage(file) {
+  // createImageBitmap downsamples DURING decode (hardware path) — on a cheap
+  // phone this is the difference between ~0.3s and several frozen seconds of
+  // decoding a 12MP JPEG at full size just to throw the pixels away.
+  const source = await decodeScaled(file, 1280);
+  const shrink = (maxSide, quality) => {
+    const s = Math.min(1, maxSide / Math.max(source.width, source.height));
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(source.width * s));
+    c.height = Math.max(1, Math.round(source.height * s));
+    c.getContext('2d').drawImage(source, 0, 0, c.width, c.height);
+    return c.toDataURL('image/jpeg', quality);
+  };
+  let dataUri = shrink(1280, 0.72);
+  if (dataUri.length > 1400000) dataUri = shrink(1024, 0.55);
+  if (dataUri.length > 1400000) dataUri = shrink(800, 0.5);
+  if (source.close) source.close();
+  return dataUri.split(',')[1];
+}
+
+async function decodeScaled(file, maxSide) {
+  if (window.createImageBitmap) {
+    try {
+      const probe = await createImageBitmap(file);
+      if (Math.max(probe.width, probe.height) <= maxSide) return probe;
+      const s = maxSide / Math.max(probe.width, probe.height);
+      const scaled = await createImageBitmap(file, {
+        resizeWidth: Math.max(1, Math.round(probe.width * s)),
+        resizeHeight: Math.max(1, Math.round(probe.height * s)),
+        resizeQuality: 'medium',
+      });
+      probe.close();
+      return scaled;
+    } catch (e) { /* fall through to <img> decode */ }
+  }
   return new Promise((resolve, reject) => {
     const img = new Image();
     const url = URL.createObjectURL(file);
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      const shrink = (maxSide, quality) => {
-        const s = Math.min(1, maxSide / Math.max(img.width, img.height));
-        const c = document.createElement('canvas');
-        c.width = Math.max(1, Math.round(img.width * s));
-        c.height = Math.max(1, Math.round(img.height * s));
-        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-        return c.toDataURL('image/jpeg', quality);
-      };
-      let dataUri = shrink(1280, 0.72);
-      if (dataUri.length > 1400000) dataUri = shrink(1024, 0.55);
-      if (dataUri.length > 1400000) dataUri = shrink(800, 0.5);
-      resolve(dataUri.split(',')[1]);
-    };
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
     img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not read that image')); };
     img.src = url;
   });
@@ -1383,8 +1403,15 @@ function compressImage(file) {
 function setPhotoUI() {
   const label = $('txn-photo-label');
   const view = $('txn-photo-view');
+  const prev = $('txn-photo-prev');
+  const emoji = $('txn-photo-emoji');
+  // a fresh capture shows itself — the picture is the confirmation
+  const showPrev = photoState.mode === 'new' && photoState.b64;
+  prev.hidden = !showPrev;
+  emoji.hidden = !!showPrev;
+  prev.src = showPrev ? 'data:image/jpeg;base64,' + photoState.b64 : '';
   if (photoState.mode === 'new') {
-    label.textContent = 'Photo added ✓';
+    label.textContent = 'Badlein';
     view.hidden = false;
   } else if (photoState.mode === 'existing') {
     label.textContent = 'Change';
@@ -1721,12 +1748,17 @@ function init() {
     const file = e.target.files && e.target.files[0];
     e.target.value = '';
     if (!file) return;
+    const label = $('txn-photo-label');
+    label.textContent = 'Photo ban rahi hai…';
+    busy(true);
     try {
       const b64 = await compressImage(file);
       photoState = { mode: 'new', b64, id: photoState.id };
-      setPhotoUI();
     } catch (err) {
       toast(err.message, true);
+    } finally {
+      busy(false);
+      setPhotoUI();
     }
   });
   $('txn-photo-view').addEventListener('click', viewCurrentPhoto);
