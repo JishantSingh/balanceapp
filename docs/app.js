@@ -1596,18 +1596,30 @@ function restoreTxn(pre) {
   toast('Entry wapas aa gayi');
 }
 
-function readdTxn(pre) {
+async function readdTxn(pre) {
   if (!pre) return;
   const tmpId = tmpTxnId();
   const data = {
     user_id: pre.user_name, date: isoOf(pre.date), type: pre.type,
     amount: pre.amount, comment: pre.comment || '',
   };
-  db.transactions.push(Object.assign(clone(pre), { id: tmpId, photo: '' }));
+  // The server trashed the Drive file with the delete — but the ledger's
+  // thumbnail loader put the full photo in the on-device store, so undo can
+  // re-upload it as a fresh file. Only a never-viewed or LRU-evicted photo
+  // is genuinely gone.
+  let photoB64 = null;
+  if (pre.photo && pre.photo !== 'pending') {
+    try {
+      const uri = photoCache[pre.photo] || await idbPhotoGet(pre.photo);
+      if (uri) photoB64 = uri.split(',')[1];
+    } catch (e) { /* fall through to the honest toast */ }
+  }
+  if (photoB64) data.photo = photoB64;
+  db.transactions.push(Object.assign(clone(pre), { id: tmpId, photo: photoB64 ? 'pending' : '' }));
   saveCache();
   enqueue('addTxn', { data }, tmpId);
   render();
-  toast(pre.photo ? 'Entry wapas aa gayi — photo nahi aa payi' : 'Entry wapas aa gayi');
+  toast(pre.photo && !photoB64 ? 'Entry wapas aa gayi — photo nahi aa payi' : 'Entry wapas aa gayi');
 }
 
 // ---------------------------------------------------------------- double-tap confirm

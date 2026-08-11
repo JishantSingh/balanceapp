@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { createBackend, seedLedger } from '../mock-backend.mjs';
-import { openLedger, openCustomer } from './helpers.mjs';
+import { openLedger, openCustomer, TINY_PNG } from './helpers.mjs';
 
 /* Deleting an entry offers one tappable undo for 7s (audit 1.2). It has two
    shapes and both have to be right: while the delete is still queued the undo
@@ -65,4 +65,36 @@ test('undoing a delete that already synced re-creates the row in the sheet', asy
   expect(back.date).toBe('2026-08-01');
   await expect(page.locator('.txn-row', { hasText: 'atta' })).toBeVisible();
   await expect(page.locator('#bal-amt')).toContainText('300');
+});
+
+test('a drained-delete undo restores the note AND the photo from the device store', async ({ page }) => {
+  const backend = createBackend(seedLedger());
+  backend.state.transactions.push({
+    id: 'tp9', user_name: 'u1', date: '2026-08-07',
+    type: 'given', amount: 999, comment: 'parchi #42', photo: 'ph9',
+  });
+  backend.state.photos.ph9 = TINY_PNG.toString('base64');
+  await openLedger(page, backend);
+  await openCustomer(page, 'Ramu Halwai');
+
+  // the thumbnail loader fetches the full photo into the device store
+  await expect(page.locator('img.txn-thumb')).toBeVisible({ timeout: 10_000 });
+
+  // delete syncs (backend up), then undo re-creates the entry
+  await page.locator('.txn-row', { hasText: 'parchi #42' }).click();
+  const del = page.locator('#txn-delete');
+  await del.click();
+  await expect(del).toHaveText('Pakka?');
+  await del.click();
+  await expect(page.locator('#dlg-txn')).toBeHidden();
+  await expect.poll(() => backend.state.transactions.some((t) => t.id === 'tp9')).toBe(false);
+
+  await page.locator('.toast-act').click();
+  await expect(page.locator('.txn-row', { hasText: 'parchi #42' })).toBeVisible();
+
+  // the re-created sheet row carries the note and a fresh re-uploaded photo
+  await expect.poll(() => {
+    const t = backend.state.transactions.find((x) => Number(x.amount) === 999);
+    return t && t.comment === 'parchi #42' && t.photo && t.photo !== 'ph9' && !!backend.state.photos[t.photo];
+  }).toBe(true);
 });
