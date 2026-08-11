@@ -153,7 +153,14 @@ There is deliberately **no runtime** central dependency: nothing a merchant does
 
 **Option C — Shared Apps Script library (rejected).** A 10-line merchant stub delegating to our published library would centralize updates perfectly — and reintroduce exactly the dependency the product exists to avoid: every merchant's backend would **stop working** if our library account died. Central runtime dependency = not our product. (It also has deployment/version-pinning subtleties in webapps that make "instant updates" less certain than advertised.)
 
-**Recommendation (updated 11 Aug 2026): B is the default path — build the self-updater into Code.gs v4 and spike it on our own test deployment first; A ships alongside as the fallback for merchants who decline the broader scopes; never C.** And regardless of adoption, §3's skew contract remains the safety net — silent updates shrink the version tail, they don't eliminate it.
+**Recommendation (final, 11 Aug 2026, after proving B end-to-end): A is the default for merchants; B is the documented power path — and the standard for our own deployments.** The spike succeeded (v4 → v5 applied by the script itself, same /exec URL, key and data intact), but it surfaced B's true setup cost, which is too heavy for the default funnel: beyond the six scopes, the script must be bound to a **standard GCP project** with the **Apps Script API and Google Drive API enabled on it**, the OAuth consent screen must be **published to production** (Testing status silently expires authorization every 7 days), and the per-user Apps Script API toggle must be on. ~10 minutes of the scariest console UI Google makes — worth it for maintainers and technical merchants, not for shopkeepers. Since the skew contract keeps old backends working forever and backend releases are rare by design, A's ~2 guided minutes per release is the better trade for everyone else. Never C.
+
+*Field notes from the spike (for whoever walks the B path next):*
+- Adding scopes to an already-authorized script can yield a **partial grant** (Google reuses old consent without re-prompting; our token had 4 of 6 scopes). Fix: revoke the app at myaccount.google.com/permissions, re-run setup, fresh consent. Verify with a tokeninfo check, not by assuming.
+- Web-app executions use the **deployed version's manifest snapshot** — after any manifest change, cut a New version or /exec keeps the old scopes.
+- The default (hidden) GCP project is sealed: you cannot enable APIs on it; the Apps Script API path requires the standard-project switch.
+- The per-user Apps Script API toggle gates **writes** (`PUT /content` failed while `GET /content` succeeded without it).
+- Release flow for self-updating deployments: edit `apps-script/`, bump `BAHI_VERSION`, run `node apps-script/make-release.mjs`, push — then either wait for the daily trigger or POST the key-gated `update` action.
 
 ## 6 · What this means for the near-term plan
 
