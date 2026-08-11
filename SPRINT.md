@@ -41,6 +41,20 @@ Ship order A → B → C (A unblocks B's undo semantics; C's tests depend on the
 
 All Phase-0 red tests green · no previously-green test broken · manual pass on the real test deployment (invite link, offline entry round-trip, photo view) · SPRINT.md + memory updated.
 
+## Sprint 3 — "PIN Suraksha" (designed 12 Aug 2026, awaiting go)
+
+Two-tier PIN protecting owner-level operations on shared shop phones. Threat model: casual misuse (staff/family), NOT a technical attacker with the device — never claim more. Decisions locked with owner 12 Aug 2026.
+
+**Master PIN** (ADMIN_PIN): generated at backend setup (printed by `setup` beside the API key; existing deployments get one at the v7 self-update, readable in Apps Script → Script Properties). Never stored on-device, never returned by any API action, not changeable in-app (escape hatch = edit the Script Property). Sole use: authorize App-PIN set/change/remove, verified server-side.
+
+**App PIN** (TXN_PIN): 4 digits, opt-in. Backend stores salted hash; hash rides in `list` → offline verification on every device sharing the ledger. Set/change in Settings → "🔒 Suraksha" (requires Master PIN, online).
+
+**Gated (App PIN replaces the double-tap when configured):** delete entry · delete customer · remove bill photo · copy invite link · disconnect device · open Connection section. **NOT gated:** adding entries, EDITING entries (owner's call — daily corrections stay free; readback toast is the audit trail), everything else.
+
+**UX:** 3×4 numeric pad in a sheet, op named in title ("Entry hatane ke liye PIN"), 4 dots, shake on wrong; 3 wrong → 30s cooldown (doubling). **2-minute grace window** after success, cleared on app background. "PIN bhool gaye?" → reset via Master PIN. Pre-v7 backend → "Backend update chahiye". PIN off → today's armConfirm behavior unchanged.
+
+**Impl:** Backend v7 (the batched release: `setTxnPin` action + `adminPin`/`txnPinSalt`/`txnPinHash` properties + hash in list + parked items #2.7 token revoke, #4.3 sheet URL) shipped via the self-updater. Frontend: `requirePin(op)` composed at the six gate sites, pad component, Suraksha settings, limiter state in localStorage. E2E: gate on/off, lockout, offline verify, change flow, second-device adoption, pre-v7 fallback, grace expiry.
+
 ## Sprint 1 — "Passbook & Photos" (shipped)
 
 Goal: ship the test user's approved requests, minus reminders (parked → backlog #1).
