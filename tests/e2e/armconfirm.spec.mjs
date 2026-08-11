@@ -6,7 +6,6 @@ test('an armed delete must not carry over to a different entry', async ({ page }
   // UX-AUDIT 0.2 — armConfirm uses a constant token ('del-txn') and nothing
   // clears it when another dialog opens: arm on entry A, cancel, open entry B
   // within 2.6s → a SINGLE tap of "Delete" destroys B.
-  test.fail(true, 'audit 0.2: cross-entity single-tap delete');
   const backend = createBackend(seedLedger());
   await openLedger(page, backend);
   await openCustomer(page, 'Ramu Halwai');

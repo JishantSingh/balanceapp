@@ -6,7 +6,6 @@ test('a toast fired while a dialog is open must be visible to the user', async (
   // UX-AUDIT 0.4 — showModal() promotes the dialog to the top layer, which
   // paints above the toast regardless of z-index. Every toast fired from
   // inside a dialog (photo loading/errors, copy confirmations) is invisible.
-  test.fail(true, 'audit 0.4: toast is occluded by the dialog top layer');
   const backend = createBackend(seedLedger());
   await openLedger(page, backend);
   await openCustomer(page, 'Ramu Halwai');

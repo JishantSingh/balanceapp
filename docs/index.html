@@ -168,6 +168,11 @@
 <dialog id="dlg-txn" class="sheet">
   <form id="form-txn" method="dialog" novalidate>
     <div id="txn-title" class="sheet-title">You gave</div>
+    <!-- edit only: the two entry buttons on the customer screen stay frozen -->
+    <div id="txn-dir" class="dir-toggle" role="group" aria-label="Kaunsi entry" hidden>
+      <button type="button" class="dir-btn dir-gave" data-dir="given" aria-pressed="false">Given</button>
+      <button type="button" class="dir-btn dir-got" data-dir="received" aria-pressed="false">Received</button>
+    </div>
     <div class="field-row">
       <label class="field field-amt">
         <span>Amount</span>
@@ -188,7 +193,6 @@
         <div class="photo-row">
           <label class="btn btn-ghost photo-add">📷 <span id="txn-photo-label">Add photo</span><input id="txn-photo" type="file" accept="image/*" hidden></label>
           <button type="button" id="txn-photo-view" class="btn btn-ghost" hidden>View</button>
-          <button type="button" id="txn-photo-remove" class="btn btn-ghost" hidden>✕</button>
         </div>
       </div>
     </div>
@@ -280,14 +284,21 @@
   <form method="dialog">
     <img id="photo-img" alt="Attached bill photo">
     <div class="sheet-actions">
+      <button type="button" id="photo-remove" class="btn btn-danger-ghost" hidden>Photo hatayein</button>
       <span class="flex-spring"></span>
       <button type="submit" class="btn btn-ghost">Close</button>
     </div>
   </form>
 </dialog>
 
+<!-- Overlays: app.js re-parents these into whatever dialog is on top, so the
+     dialog's top layer can never bury them — see audit 0.4. -->
 <div id="toast" class="toast" hidden></div>
 <div id="busy" class="busy" hidden><span></span></div>
+<div id="update-bar" class="update-bar" hidden>
+  <button type="button" id="update-go" class="update-text">App ka naya version taiyaar hai — tap karke chaalu karein</button>
+  <button type="button" id="update-dismiss" class="update-x" aria-label="Abhi nahi">✕</button>
+</div>
 
 <script src="app.js"></script>
 </body>

@@ -35,6 +35,7 @@ let editingTxnId = null;
 let editingCustomerId = null;
 let txnFormType = 'given';
 let confirmArmed = null;
+let updateWaiting = false;                // a new app version is installed and waiting
 
 // photo form state: mode 'none' | 'existing' | 'new' | 'removed'
 let photoState = { mode: 'none', b64: null, id: null };
@@ -68,30 +69,95 @@ function show(name) {
   window.scrollTo(0, 0);
 }
 
-function toast(msg, isError) {
-  const el = $('toast');
-  el.textContent = msg;
-  el.classList.toggle('err', !!isError);
-  el.classList.remove('update');
-  el.onclick = null;
-  el.hidden = false;
-  clearTimeout(toast._t);
-  toast._t = setTimeout(() => { el.hidden = true; }, 3200);
+// ---------------------------------------------------------------- top layer
+
+/* showModal() promotes a dialog to the *top layer*: it paints above every
+   z-indexed element in the page, and everything outside it goes inert, so it
+   swallows taps too. Toasts and the busy bar were therefore invisible exactly
+   where feedback matters most — photo loading, photo failures (audit 0.4).
+   A popover shares the top layer but is still inert under an open modal, so
+   the reliable fix is to keep the overlays *inside* whatever dialog is on top.
+   They are position:fixed, so the geometry never changes; they simply belong
+   to the dialog's subtree and ride above it. */
+
+const openSheets = [];   // modal dialogs we opened, in top-layer order
+
+// Self-healing: a dialog reports open === false the instant close() runs,
+// while its `close` event only arrives on a later task.
+function overlayHost() {
+  for (let i = openSheets.length - 1; i >= 0; i--) {
+    if (openSheets[i].open) return openSheets[i];
+    openSheets.splice(i, 1);
+  }
+  return document.body;
 }
 
-// Persistent, tappable toast shown when a new app version finished
-// downloading in the background — tapping reloads straight into it.
-function showUpdateToast() {
-  const el = $('toast');
-  el.textContent = 'Naya version aa gaya — tap karein ⟳';
-  el.classList.remove('err');
-  el.classList.add('update');
-  el.hidden = false;
-  clearTimeout(toast._t);
-  el.onclick = () => location.reload();
+function moveOverlays() {
+  const host = overlayHost();
+  ['toast', 'busy', 'update-bar'].forEach((id) => {
+    const el = $(id);
+    if (el && el.parentNode !== host) host.appendChild(el);
+  });
 }
 
-function busy(on) { $('busy').hidden = !on; }
+function showSheet(dlg) {
+  dlg.showModal();
+  if (!openSheets.includes(dlg)) openSheets.push(dlg);
+  moveOverlays();
+}
+
+function topShow(el) { moveOverlays(); el.hidden = false; }
+function topHide(el) { el.hidden = true; }
+
+// ---------------------------------------------------------------- toast
+
+/* One toast slot. opts: {err} red · {tone:'gave'|'got'} money colours (audit
+   1.3) · {action,onAction} one tappable action, e.g. undo (audit 1.2) · {ms}.
+   The update notice deliberately does NOT live here — it has its own element
+   so a passing toast can never destroy it (audit 0.7). */
+function showToast(msg, opts) {
+  const o = opts || {};
+  const el = $('toast');
+  el.className = 'toast' + (o.err ? ' err' : '') + (o.tone ? ' ' + o.tone : '') +
+    (o.action ? ' act' : '');
+  el.textContent = '';
+  const text = document.createElement('span');
+  text.textContent = msg;
+  el.appendChild(text);
+  if (o.action) {
+    const act = document.createElement('button');
+    act.type = 'button';
+    act.className = 'toast-act';
+    act.textContent = o.action;
+    act.addEventListener('click', () => { hideToast(); o.onAction(); });
+    el.appendChild(act);
+  }
+  topShow(el);
+  clearTimeout(toast._t);
+  toast._t = setTimeout(hideToast, o.ms || 3200);
+}
+
+function toast(msg, isError) { showToast(msg, { err: !!isError }); }
+
+function hideToast() {
+  clearTimeout(toast._t);
+  topHide($('toast'));
+}
+
+// ---------------------------------------------------------------- update notice
+
+// A finished background download of a new app version. It gets its own
+// persistent surface (never the shared toast slot) and comes back on every
+// foreground until the merchant actually reloads (audit 0.7).
+function showUpdateBar() {
+  updateWaiting = true;
+  topShow($('update-bar'));
+}
+
+function busy(on) {
+  const el = $('busy');
+  if (on) topShow(el); else topHide(el);
+}
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
@@ -972,56 +1038,137 @@ function compressImage(file) {
 function setPhotoUI() {
   const label = $('txn-photo-label');
   const view = $('txn-photo-view');
-  const remove = $('txn-photo-remove');
   if (photoState.mode === 'new') {
     label.textContent = 'Photo added ✓';
-    view.hidden = false; remove.hidden = false;
+    view.hidden = false;
   } else if (photoState.mode === 'existing') {
     label.textContent = 'Change';
-    view.hidden = false; remove.hidden = false;
+    view.hidden = false;
   } else {
     label.textContent = 'Add photo';
-    view.hidden = true; remove.hidden = true;
+    view.hidden = true;
   }
 }
 
+// Removing a bill photo now lives in the viewer, behind a confirm — you have to
+// be looking at the photo to throw it away (audit 1.2). Only the form flow may
+// remove; a tap from the read-only ledger just looks.
 async function viewCurrentPhoto() {
   if (photoState.mode === 'new') {
     const img = $('photo-img');
     img.src = 'data:image/jpeg;base64,' + photoState.b64;
-    $('dlg-photo').showModal();
+    openPhotoViewer(true);
   } else if (photoState.mode === 'existing') {
-    viewPhotoById(photoState.id);
+    viewPhotoById(photoState.id, true);
   }
 }
 
-async function viewPhotoById(id) {
+function openPhotoViewer(fromForm) {
+  $('photo-remove').hidden = !fromForm;
+  showSheet($('dlg-photo'));
+}
+
+async function viewPhotoById(id, fromForm) {
   const img = $('photo-img');
   img.src = '';
   try {
     if (!photoCache[id]) {
-      toast('Loading photo…');
+      toast('Photo aa rahi hai…');
       const data = await api('photo', { id });
       if (!data.b64) throw new Error('Photo not found');
       photoCache[id] = `data:${data.mime || 'image/jpeg'};base64,` + data.b64;
     }
     img.src = photoCache[id];
-    $('dlg-photo').showModal();
+    openPhotoViewer(fromForm);
   } catch (err) {
-    toast('Could not load photo: ' + err.message, true);
+    toast('Photo nahi khul payi: ' + err.message, true);
   }
+}
+
+// ---------------------------------------------------------------- entry save & undo
+
+/* Colored readback after every save — the only way a red/green mis-tap gets
+   noticed at all (audit 1.3). Red for given, green for received, the
+   customer's first name, and the balance the entry actually produced. */
+function saveReadback(payload) {
+  const u = currentCustomer();
+  const first = u ? String(u.name).trim().split(/\s+/)[0] : '';
+  const bal = balanceOf(currentCustomerId);
+  const tail = bal > 0 ? money(bal) + ' baaki'
+    : bal < 0 ? money(bal) + ' advance'
+    : 'hisaab clear';
+  const got = payload.type === 'received';
+  showToast(
+    `${money(payload.amount)} ${got ? 'mila' : 'diya'} · ${first} — ${tail}` +
+    (navigator.onLine ? '' : ' · sync baaki'),
+    { tone: got ? 'got' : 'gave' }
+  );
+}
+
+/* Undo after deleting an entry (audit 1.2). Two shapes, both cheap:
+   - the delete is still sitting in the queue (or was only ever a queued add):
+     drop that queue item and put the row back — no server call at all;
+   - the queue already drained, or we are in demo mode where writes go through
+     immediately: the sheet row is gone, so re-create it as a fresh addTxn.
+   A re-created entry cannot carry its photo back (the bytes only ever lived in
+   the queued payload), so it returns without one. */
+function restoreTxn(pre) {
+  if (!pre) return;
+  if (!db.transactions.some((t) => String(t.id) === String(pre.id))) db.transactions.push(clone(pre));
+  saveCache();
+  render();
+  toast('Entry wapas aa gayi');
+}
+
+function readdTxn(pre) {
+  if (!pre) return;
+  const tmpId = 'tmp' + Date.now();
+  const data = {
+    user_id: pre.user_name, date: isoOf(pre.date), type: pre.type,
+    amount: pre.amount, comment: pre.comment || '',
+  };
+  db.transactions.push(Object.assign(clone(pre), { id: tmpId, photo: '' }));
+  saveCache();
+  enqueue('addTxn', { data }, tmpId);
+  render();
+  toast(pre.photo ? 'Entry wapas aa gayi — photo nahi aa payi' : 'Entry wapas aa gayi');
 }
 
 // ---------------------------------------------------------------- double-tap confirm
 
-function armConfirm(btn, token, label) {
-  if (confirmArmed === token) { confirmArmed = null; return true; }
+/* Two taps to destroy something. The token must name the *entity*, never just
+   the kind of thing ('del-txn:t9', not 'del-txn'), and the armed state is
+   cleared whenever a dialog opens or closes — otherwise arming on entry A and
+   cancelling leaves entry B one tap from the grave (audit 0.2). */
+
+// Put every armed button back the way it was and forget the arming.
+function disarmConfirm() {
+  confirmArmed = null;
+  clearTimeout(armConfirm._t);
+  document.querySelectorAll('.btn.armed').forEach((b) => {
+    if (b.dataset.armedLabel != null) {
+      b.textContent = b.dataset.armedLabel;
+      delete b.dataset.armedLabel;
+    }
+    b.classList.remove('armed');
+    b.style.width = '';
+  });
+}
+
+function armConfirm(btn, token, warn) {
+  if (confirmArmed === token) { disarmConfirm(); return true; }
+  disarmConfirm();
   confirmArmed = token;
-  const original = btn.textContent;
-  btn.textContent = label || 'Tap again to confirm';
-  setTimeout(() => {
-    if (confirmArmed === token) confirmArmed = null;
-    btn.textContent = original;
+  // Pin the box before swapping the label: an armed button that resizes shoves
+  // the whole action row sideways, and the next tap lands somewhere else.
+  const w = btn.getBoundingClientRect().width;   // border-box, so it round-trips exactly
+  if (w) btn.style.width = w.toFixed(2) + 'px';
+  btn.dataset.armedLabel = btn.textContent;
+  btn.textContent = 'Pakka?';
+  btn.classList.add('armed');   // ghost-red outline fills in solid red
+  if (warn) toast(warn);        // room for the real warning, no reflow
+  armConfirm._t = setTimeout(() => {
+    if (confirmArmed === token) disarmConfirm();
   }, 2600);
   return false;
 }
@@ -1070,7 +1217,7 @@ function init() {
   $('chip-pending').addEventListener('click', () => { toast('Retrying sync…'); processQueue(); });
   $('chip-failed').addEventListener('click', () => {
     renderFailed();
-    $('dlg-failed').showModal();
+    showSheet($('dlg-failed'));
   });
   $('chip-auth').addEventListener('click', () => $('btn-settings').click());
   $('failed-list').addEventListener('click', (e) => {
@@ -1095,7 +1242,7 @@ function init() {
     $('set-key').value = config.key || '';
     document.querySelector('.settings-conn').open = false;
     $('btn-invite').hidden = !!config.demo || !config.url;
-    $('dlg-settings').showModal();
+    showSheet($('dlg-settings'));
   });
   $('btn-invite').addEventListener('click', () => {
     copyText(inviteLink())
@@ -1116,7 +1263,7 @@ function init() {
     toast('Settings saved');
   });
   $('btn-disconnect').addEventListener('click', (e) => {
-    if (!armConfirm(e.target, 'disconnect')) return;
+    if (!armConfirm(e.currentTarget, 'disconnect')) return;
     const unsynced = queue.length + failed.length;
     if (unsynced && !window.confirm(unsynced + ' unsynced change(s) will be lost. Disconnect anyway?')) return;
     [LS_CONFIG, LS_CACHE, LS_DEMO, LS_QUEUE, LS_FAILED].forEach((k) => localStorage.removeItem(k));
@@ -1138,7 +1285,7 @@ function init() {
   $('btn-got').addEventListener('click', () => openTxnForm('received', null));
   $('txn-list').addEventListener('click', (e) => {
     const th = e.target.closest('.txn-thumb');
-    if (th && th.dataset.pid) { viewPhotoById(th.dataset.pid); return; }
+    if (th && th.dataset.pid) { viewPhotoById(th.dataset.pid, false); return; }
     const row = e.target.closest('.txn-row');
     if (!row) return;
     const t = db.transactions.find((x) => x.id === row.dataset.id);
@@ -1159,9 +1306,18 @@ function init() {
     }
   });
   $('txn-photo-view').addEventListener('click', viewCurrentPhoto);
-  $('txn-photo-remove').addEventListener('click', () => {
+  $('photo-remove').addEventListener('click', (e) => {
+    if (!armConfirm(e.currentTarget, 'del-photo')) return;
     photoState = { mode: 'removed', b64: null, id: null };
     setPhotoUI();
+    $('dlg-photo').close();
+    toast('Photo hata di — entry save karein');
+  });
+
+  // direction toggle (edit only)
+  $('txn-dir').addEventListener('click', (e) => {
+    const b = e.target.closest('.dir-btn');
+    if (b) setTxnFormType(b.dataset.dir);
   });
 
   // txn dialog
@@ -1209,24 +1365,45 @@ function init() {
     }
     saveCache();
     render();
-    if (!navigator.onLine) toast('Saved — will sync when you are back online');
+    saveReadback(payload);
   });
   $('txn-delete').addEventListener('click', (e) => {
-    if (!armConfirm(e.target, 'del-txn')) return;
+    if (!armConfirm(e.currentTarget, 'del-txn:' + editingTxnId)) return;
     $('dlg-txn').close();
     const id = editingTxnId;
     const pre = clone(db.transactions.find((x) => x.id === id));
     db.transactions = db.transactions.filter((x) => x.id !== id);
     const queuedAdd = isTmp(id) && queuedAddFor(id);
+    let undoDelete;
     if (queuedAdd) {
+      // Never reached the sheet — dropping its queued add *is* the delete, so
+      // undo is simply putting that item (and the row) back.
+      const at = queue.indexOf(queuedAdd);
       queue = queue.filter((item) => item !== queuedAdd);
       saveQueue();
+      undoDelete = () => {
+        queue.splice(Math.min(at, queue.length), 0, queuedAdd);
+        saveQueue();
+        restoreTxn(pre);
+        processQueue();
+      };
     } else {
       enqueue('deleteTxn', { id }, null, pre ? { type: 'txn', txn: pre } : null);
+      const queued = queue[queue.length - 1];
+      const del = queued && queued.action === 'deleteTxn' && queued.payload.id === id ? queued : null;
+      undoDelete = () => {
+        const i = del ? queue.indexOf(del) : -1;
+        if (i >= 0) { queue.splice(i, 1); saveQueue(); restoreTxn(pre); }   // still queued: purely local
+        else readdTxn(pre);                                                 // already gone upstream: re-create
+      };
     }
     saveCache();
     render();
-    toast('Entry deleted');
+    if (pre) {
+      showToast('Entry hata di ·', {
+        action: 'WAPAS LAYEIN', onAction: undoDelete, ms: 7000,
+      });
+    }
   });
 
   // customer dialog
@@ -1264,7 +1441,8 @@ function init() {
     render();
   });
   $('cust-delete').addEventListener('click', (e) => {
-    if (!armConfirm(e.target, 'del-cust', 'Tap again — deletes all entries')) return;
+    if (!armConfirm(e.currentTarget, 'del-cust:' + editingCustomerId,
+      'Dobara tap — is customer ki saari entry mit jayengi')) return;
     $('dlg-customer').close();
     const id = editingCustomerId;
     // pre-image for rollback: the customer AND every entry that goes with them
@@ -1290,6 +1468,21 @@ function init() {
   // generic dialog close buttons
   document.querySelectorAll('[data-close]').forEach((b) =>
     b.addEventListener('click', () => b.closest('dialog').close()));
+
+  // A cancelled (or submitted, or Esc'd) dialog must never leave an arming
+  // behind for whatever opens next — audit 0.2's other half. It also hands the
+  // overlays back down to whatever is underneath it.
+  document.querySelectorAll('dialog').forEach((d) => d.addEventListener('close', () => {
+    disarmConfirm();
+    moveOverlays();
+  }));
+
+  // update notice — its own element, so an ordinary toast can't wipe it
+  $('update-go').addEventListener('click', () => location.reload());
+  $('update-dismiss').addEventListener('click', () => topHide($('update-bar')));
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && updateWaiting) showUpdateBar();
+  });
 
   // resync when network returns
   window.addEventListener('online', () => { setOffline(false); processQueue(); });
@@ -1324,7 +1517,7 @@ function init() {
         fresh.addEventListener('statechange', () => {
           // "installed" with an existing controller = an update, not a first install
           if (fresh.state === 'installed' && navigator.serviceWorker.controller) {
-            showUpdateToast();
+            showUpdateBar();
           }
         });
       });
@@ -1349,13 +1542,27 @@ function copyText(text) {
   return Promise.resolve();
 }
 
-function openTxnForm(type, txn) {
-  txnFormType = type;
-  editingTxnId = txn ? txn.id : null;
+// Direction is the one thing a merchant most often taps wrong, and the two
+// entry buttons on the customer screen are frozen — so the fix is a toggle
+// inside the *edit* dialog only (audit 1.3). It repaints the title, the Save
+// button and the toggle itself, so the colour never lies about what will save.
+function setTxnFormType(type) {
+  txnFormType = type === 'received' ? 'received' : 'given';
+  const got = txnFormType === 'received';
   const title = $('txn-title');
-  title.textContent = type === 'received' ? 'Received' : 'Given';
-  title.className = 'sheet-title ' + (type === 'received' ? 'got' : 'gave');
-  $('txn-save').className = 'btn btn-ink ' + (type === 'received' ? 'got' : 'gave');
+  title.textContent = got ? 'Received' : 'Given';
+  title.className = 'sheet-title ' + (got ? 'got' : 'gave');
+  $('txn-save').className = 'btn btn-ink ' + (got ? 'got' : 'gave');
+  $('txn-dir').querySelectorAll('.dir-btn').forEach((b) => {
+    b.setAttribute('aria-pressed', String(b.dataset.dir === txnFormType));
+  });
+}
+
+function openTxnForm(type, txn) {
+  disarmConfirm();   // an arming can never survive into another entry
+  editingTxnId = txn ? txn.id : null;
+  setTxnFormType(type);
+  $('txn-dir').hidden = !txn;   // only when editing; new entries keep the frozen flow
   $('txn-cur').textContent = (config && config.currency) || '₹';
   $('txn-amount').value = txn ? String(txn.amount) : '';
   $('txn-date').value = txn ? isoOf(txn.date) : todayISO();
@@ -1367,11 +1574,12 @@ function openTxnForm(type, txn) {
   $('txn-delete').hidden = !txn;
   $('txn-delete').textContent = 'Delete';
   $('txn-error').hidden = true;
-  $('dlg-txn').showModal();
+  showSheet($('dlg-txn'));
   if (!txn) $('txn-amount').focus();
 }
 
 function openCustomerForm(id) {
+  disarmConfirm();   // …nor into another customer
   editingCustomerId = id;
   const u = id ? db.users.find((x) => String(x.user_id) === String(id)) : null;
   $('cust-dlg-title').textContent = u ? 'Edit customer' : 'New customer';
@@ -1380,7 +1588,7 @@ function openCustomerForm(id) {
   $('cust-delete').hidden = !u;
   $('cust-delete').textContent = 'Delete';
   $('cust-error').hidden = true;
-  $('dlg-customer').showModal();
+  showSheet($('dlg-customer'));
   if (!u) $('cust-input-name').focus();
 }
 

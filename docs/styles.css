@@ -114,6 +114,15 @@ body {
 .btn-ghost { border-color: var(--border-strong); background: var(--surface); color: var(--text-2); }
 .btn-wide { width: 100%; }
 .btn-danger-ghost { border-color: var(--red); color: var(--red); background: transparent; }
+/* armed = one more tap destroys something. The button's width is pinned in JS
+   before the label swaps, so the row never shifts under the finger; the state
+   is carried by colour — ghost outline filling in solid red (audit 0.2). */
+.btn.armed {
+  background: var(--red-fill);
+  border-color: var(--red-fill);
+  color: var(--on-fill);
+  white-space: nowrap;
+}
 .btn-gave { background: var(--red-fill); border-color: var(--red-fill); color: var(--on-fill); flex: 1; font-size: 0.95rem; padding: 15px; }
 .btn-got { background: var(--green-fill); border-color: var(--green-fill); color: var(--on-fill); flex: 1; font-size: 0.95rem; padding: 15px; }
 /* reminder is an action, not money — brand blue */
@@ -518,6 +527,29 @@ body {
 #txn-save.gave { background: var(--red-fill); }
 #txn-save.got { background: var(--green-fill); }
 
+/* direction toggle — edit dialog only (audit 1.3). Same red/green language as
+   the frozen entry buttons, so the fix reads like the mistake. */
+.dir-toggle {
+  display: flex;
+  margin-bottom: 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.dir-btn {
+  appearance: none; -webkit-appearance: none;
+  flex: 1;
+  border: 0;
+  background: var(--surface);
+  color: var(--text-2);
+  font-family: var(--sans); font-size: 0.88rem; font-weight: 600;
+  padding: 12px 8px;
+  cursor: pointer;
+}
+.dir-btn + .dir-btn { border-left: 1px solid var(--border-strong); }
+.dir-gave[aria-pressed="true"] { background: var(--red-fill); color: var(--on-fill); }
+.dir-got[aria-pressed="true"] { background: var(--green-fill); color: var(--on-fill); }
+
 .settings-conn { margin: 6px 0 4px; }
 .settings-conn summary {
   font-size: 0.78rem; font-weight: 600;
@@ -530,6 +562,9 @@ body {
 
 /* ---------- toast & busy ---------- */
 
+/* Both overlays are position:fixed, so app.js can re-parent them into an open
+   dialog (audit 0.4) without their geometry changing. */
+
 .toast {
   position: fixed;
   left: 50%; transform: translateX(-50%);
@@ -540,17 +575,38 @@ body {
   border-radius: 8px;
   box-shadow: var(--shadow-pop);
   z-index: 70;
+  /* left:50% leaves only half the viewport as "available" width, so a plain
+     shrink-to-fit box wraps at ~50vw — ask for max-content and cap it instead */
+  width: max-content;
   max-width: 86vw;
   text-align: center;
   animation: toastRise 0.25s ease both;
 }
+/* with an action the two parts must never wrap apart from their divider */
+.toast.act { display: flex; align-items: center; text-align: left; }
 /* `both` fill would otherwise clobber the base translateX(-50%) centering */
 @keyframes toastRise {
   from { opacity: 0; transform: translate(-50%, 14px); }
   to { opacity: 1; transform: translate(-50%, 0); }
 }
 .toast.err { background: var(--red-fill); color: var(--on-fill); }
-.toast.update { background: var(--blue); color: #fff; cursor: pointer; }
+/* money colours on the save readback: red = diya, green = mila (audit 1.3) */
+.toast.gave { background: var(--red-fill); color: var(--on-fill); }
+.toast.got { background: var(--green-fill); color: var(--on-fill); }
+
+/* the one action a toast may carry — undo (audit 1.2) */
+.toast-act {
+  appearance: none; -webkit-appearance: none;
+  display: inline-block;
+  margin-left: 10px;
+  padding: 2px 2px 2px 10px;
+  border: 0; border-left: 1px solid rgba(255, 255, 255, 0.35);
+  background: none;
+  font-family: var(--sans); font-size: 0.78rem; font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #fff;
+  cursor: pointer;
+}
 
 .busy {
   position: fixed;
@@ -567,8 +623,56 @@ body {
 }
 @keyframes slide { 0% { transform: translateX(-110%); } 100% { transform: translateX(280%); } }
 
+/* ---------- update notice ---------- */
+
+/* Its own persistent surface: an ordinary toast must never be able to destroy
+   the one prompt that gets people onto a new version (audit 0.7). */
+.update-bar {
+  position: fixed;
+  /* clears the app bar (56px home / 64px customer) so it reads as a notice
+     floating below it, not as part of the blue bar */
+  top: calc(env(safe-area-inset-top) + 74px);
+  left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 2px;
+  padding: 0 4px 0 0;
+  width: max-content;
+  max-width: 92vw;
+  /* a pill until the sentence wraps on a narrow phone, then still a tidy bar */
+  border-radius: 14px;
+  background: var(--blue);
+  color: #fff;
+  box-shadow: var(--shadow-pop);
+  z-index: 75;
+  animation: barDrop 0.25s ease both;
+}
+@keyframes barDrop {
+  from { opacity: 0; transform: translate(-50%, -10px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+.update-text {
+  appearance: none; -webkit-appearance: none;
+  flex: 1; min-width: 0;
+  border: 0; background: none;
+  font-family: var(--sans); font-size: 0.8rem; font-weight: 600;
+  color: #fff;
+  text-align: left;
+  padding: 11px 6px 11px 16px;
+  cursor: pointer;
+}
+.update-x {
+  appearance: none; -webkit-appearance: none;
+  flex: none;
+  width: 30px; height: 30px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 50%;
+  background: rgba(255, 255, 255, 0.18);
+  font-family: var(--sans); font-size: 0.8rem;
+  color: #fff;
+  cursor: pointer;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .reveal, .customer-row, .txn-row, .sheet form, .toast { animation: none; }
+  .reveal, .customer-row, .txn-row, .sheet form, .toast, .update-bar { animation: none; }
 }
 
 /* ---------- pending-sync chip (offline write queue) ---------- */
@@ -616,10 +720,17 @@ body {
 /* ---------- entry photos ---------- */
 
 .photo-row { display: flex; align-items: stretch; gap: 8px; }
-.photo-row .btn { padding: 8px 12px; font-size: 0.85rem; }
+/* remove moved into the viewer, so Add/Change and View split the whole row —
+   the longer label takes two thirds, and a wrapped label still fits the 48px
+   control height every other field in the form uses */
+.photo-row .btn {
+  flex: 1; min-width: 0;
+  padding: 8px 10px;
+  font-size: 0.85rem; line-height: 1.15;
+}
 
 /* .btn.btn-ghost variant on the <label> wrapping the file input */
-.photo-add { flex: 1; cursor: pointer; }
+.photo-add { flex: 2; cursor: pointer; }
 
 /* photo viewer dialog */
 .sheet-photo img {
