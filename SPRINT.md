@@ -52,11 +52,11 @@ Two-tier PIN protecting owner-level operations on shared shop phones. Threat mod
 
 **App PIN** (TXN_PIN): 4 digits, opt-in. Backend stores salted hash; hash rides in `list` → offline verification on every device sharing the ledger. Set/change in Settings → "🔒 Suraksha" (requires Master PIN, online).
 
-**Gated (App PIN replaces the double-tap when configured):** delete entry · delete customer · remove bill photo · copy invite link · disconnect device · open Connection section. **NOT gated:** adding entries, EDITING entries (owner's call — daily corrections stay free; readback toast is the audit trail), everything else.
+**Gated (App PIN replaces the double-tap when configured):** opening an existing entry for editing · delete entry · delete customer · remove bill photo · copy invite link · disconnect device · open Connection section. **NOT gated:** adding new entries and routine read-only use. Existing-entry editing was moved behind the PIN at the edit-sheet boundary on 30 Aug 2026; amount, direction, date, note, and photo changes are therefore covered together.
 
 **UX:** 3×4 numeric pad in a sheet, op named in title ("Entry hatane ke liye PIN"), 4 dots, shake on wrong; 3 wrong → 30s cooldown (doubling). **2-minute grace window** after success, cleared on app background. "PIN bhool gaye?" → reset via Master PIN. Pre-v7 backend → "Backend update chahiye". PIN off → today's armConfirm behavior unchanged.
 
-**Impl:** Backend v7 (the batched release: `setTxnPin` action + `adminPin`/`txnPinSalt`/`txnPinHash` properties + hash in list + parked items #2.7 token revoke, #4.3 sheet URL) shipped via the self-updater. Frontend: `requirePin(op)` composed at the six gate sites, pad component, Suraksha settings, limiter state in localStorage. E2E: gate on/off, lockout, offline verify, change flow, second-device adoption, pre-v7 fallback, grace expiry.
+**Impl:** Backend v7 (the batched release: `setTxnPin` action + `adminPin`/`txnPinSalt`/`txnPinHash` properties + hash in list + parked items #2.7 token revoke, #4.3 sheet URL) shipped via the self-updater. Frontend: `requirePin(op)` composed at the protected boundaries, pad component, Suraksha settings, limiter state in localStorage. E2E: gate on/off, edit-sheet protection, lockout, offline verify, change flow, second-device adoption, pre-v7 fallback, grace expiry.
 
 ## Sprint 1 — "Passbook & Photos" (shipped)
 

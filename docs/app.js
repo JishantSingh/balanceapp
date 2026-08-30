@@ -1913,9 +1913,10 @@ function requirePin(label) {
   });
 }
 
-/* The six owner-level actions run through here. With an App PIN configured
+/* Destructive owner-level actions run through here. With an App PIN configured
    the PIN *replaces* the double-tap; with no PIN the call site's own
-   armConfirm decides, exactly as it did before Suraksha. */
+   armConfirm decides, exactly as it did before Suraksha. Existing-entry edits
+   use requirePin() at the earlier boundary where their sheet is opened. */
 function gated(label, arm, fn) {
   if (!pinConfigured()) { if (arm()) fn(); return; }
   requirePin(label).then((ok) => { if (ok) fn(); });
@@ -2246,7 +2247,7 @@ function init() {
     const row = e.target.closest('.txn-row');
     if (!row) return;
     const t = db.transactions.find((x) => String(x.id) === String(row.dataset.id));
-    if (t) openTxnForm(t.type, t);
+    if (t) openExistingTxn(t);
   });
 
   // txn photo controls
@@ -2589,6 +2590,24 @@ function setTxnFormType(type) {
   $('txn-save').className = 'btn btn-ink ' + (got ? 'got' : 'gave');
   $('txn-dir').querySelectorAll('.dir-btn').forEach((b) => {
     b.setAttribute('aria-pressed', String(b.dataset.dir === txnFormType));
+  });
+}
+
+// An existing entry is already editable the moment its sheet opens, so the
+// PIN belongs at that boundary rather than on Save. This covers amount, date,
+// direction, note and photo changes together while leaving new-entry capture
+// fast. The normal two-minute authenticated grace window still applies.
+function openExistingTxn(txn) {
+  const ledger = ledgerGen;
+  const id = String(txn.id);
+  requirePin('Entry badalne ke liye PIN').then((ok) => {
+    if (!ok || ledger !== ledgerGen) return;
+    const current = db.transactions.find((t) => String(t.id) === id);
+    if (!current || String(current.user_name) !== String(currentCustomerId)) {
+      toast('Yeh entry ab yahan nahi hai', true);
+      return;
+    }
+    openTxnForm(current.type, current);
   });
 }
 
