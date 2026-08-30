@@ -11,9 +11,9 @@ import {
    the App PIN is 4 digits, verified on-device against the salt+hash that
    rides in `list` — so it works offline, on every phone sharing the khata.
 
-   With a PIN configured it REPLACES the double-tap on six owner-level
-   actions. With no PIN (or a pre-Suraksha backend) every one of those paths
-   must behave exactly as it did before this sprint. */
+   With a PIN configured it protects existing-entry editing and replaces the
+   double-tap on destructive owner-level actions. With no PIN (or a
+   pre-Suraksha backend) those paths behave as they did before Suraksha. */
 
 const SALT = 'ffee000000000001';
 const withPin = (pin) => ({ ...seedLedger(), pin: { salt: SALT, hash: pinHash(SALT, pin) } });
@@ -134,27 +134,43 @@ test('a wrong Master PIN sets nothing and says where the right one lives', async
 
 /* ---------- the gate itself ---------- */
 
-test('a configured PIN replaces the double-tap on entry delete', async ({ page }) => {
+test('a configured PIN protects the edit sheet before any existing entry can change', async ({ page }) => {
   const backend = createBackend(withPin('1234'));
   await openLedger(page, backend);
   await openCustomer(page, 'Ramu Halwai');
-  await openEntry(page, 'atta');
 
-  await page.locator('#txn-delete').click();
+  await page.locator('.txn-row', { hasText: 'atta' }).click();
   await expect(page.locator('#dlg-pin')).toBeVisible();
-  await expect(page.locator('#pin-title')).toHaveText('Entry hatane ke liye PIN');
-  await expect(page.locator('#txn-delete')).toHaveText('Delete');   // never armed
+  await expect(page.locator('#pin-title')).toHaveText('Entry badalne ke liye PIN');
+  await expect(page.locator('#dlg-txn')).toBeHidden();
 
   await typePin(page, '9999');
   await expect(page.locator('#pin-error')).toContainText('PIN galat hai');
-  await expect(page.locator('.txn-row', { hasText: 'atta' })).toHaveCount(1);
+  expect(backend.state.transactions.find((t) => t.id === 't1').amount).toBe(500);
 
   await typePin(page, '1234');
   await expect(page.locator('#dlg-pin')).toBeHidden();
+  await expect(page.locator('#dlg-txn')).toBeVisible();
+  await page.locator('#txn-amount').fill('600');
+  await page.locator('#txn-save').click();
+  await expect(page.locator('#dlg-txn')).toBeHidden();
+  await expect.poll(() => backend.state.transactions.find((t) => t.id === 't1')?.amount).toBe(600);
+});
+
+test('the PIN that opens an edit sheet also authorizes its delete', async ({ page }) => {
+  const backend = createBackend(withPin('1234'));
+  await openLedger(page, backend);
+  await openCustomer(page, 'Ramu Halwai');
+
+  await page.locator('.txn-row', { hasText: 'atta' }).click();
+  await typePin(page, '1234');
+  await expect(page.locator('#dlg-txn')).toBeVisible();
+  await page.locator('#txn-delete').click();
+
+  await expect(page.locator('#dlg-pin')).toBeHidden();       // same grace window
   await expect(page.locator('#dlg-txn')).toBeHidden();
   await expect(page.locator('.txn-row', { hasText: 'atta' })).toHaveCount(0);
   await expect.poll(() => backend.state.transactions.some((t) => t.id === 't1')).toBe(false);
-  // the post-confirm behaviour is untouched: the undo is still offered
   await expect(page.locator('.toast-act')).toHaveText('WAPAS LAYEIN');
 });
 
@@ -162,10 +178,11 @@ test('three wrong PINs lock the pad, with a countdown and a way out', async ({ p
   const backend = createBackend(withPin('1234'));
   await openLedger(page, backend);
   await openCustomer(page, 'Ramu Halwai');
-  await openEntry(page, 'atta');
 
-  await page.locator('#txn-delete').click();
+  await page.locator('.txn-row', { hasText: 'atta' }).click();
   await expect(page.locator('#dlg-pin')).toBeVisible();
+  await expect(page.locator('#pin-title')).toHaveText('Entry badalne ke liye PIN');
+  await expect(page.locator('#dlg-txn')).toBeHidden();
   await typePin(page, '1111');
   await expect(page.locator('#pin-lock')).toBeHidden();
   await typePin(page, '2222');
@@ -196,9 +213,10 @@ test('one correct PIN covers the next couple of minutes of work', async ({ page 
   await openLedger(page, backend);
   await openCustomer(page, 'Ramu Halwai');
 
-  await openEntry(page, 'atta');
-  await page.locator('#txn-delete').click();
+  await page.locator('.txn-row', { hasText: 'atta' }).click();
   await typePin(page, '1234');
+  await expect(page.locator('#dlg-txn')).toBeVisible();
+  await page.locator('#txn-delete').click();
   await expect(page.locator('.txn-row', { hasText: 'atta' })).toHaveCount(0);
 
   // second delete inside the window: no pad at all
@@ -218,11 +236,11 @@ test('a device that never set the PIN still has to type it, and adopts a changed
   expect(cached.pin.hash).toBe(pinHash(SALT, '1234'));
 
   await openCustomer(page, 'Ramu Halwai');
-  await openEntry(page, 'atta');
-  await page.locator('#txn-delete').click();
+  await page.locator('.txn-row', { hasText: 'atta' }).click();
   await expect(page.locator('#dlg-pin')).toBeVisible();
   await page.locator('#dlg-pin [data-close]').click();
   await expect(page.locator('#dlg-pin')).toBeHidden();
+  await expect(page.locator('#dlg-txn')).toBeHidden();
 
   // the owner changes it on their own phone; this one picks it up on sync
   const salt2 = 'ffee000000000002';
@@ -231,11 +249,12 @@ test('a device that never set the PIN still has to type it, and adopts a changed
   await expect.poll(async () => ((await lsJSON(page, 'bahi.cache')).pin || {}).salt).toBe(salt2);
 
   await openCustomer(page, 'Ramu Halwai');
-  await openEntry(page, 'atta');
-  await page.locator('#txn-delete').click();
+  await page.locator('.txn-row', { hasText: 'atta' }).click();
   await typePin(page, '1234');                       // yesterday's PIN
   await expect(page.locator('#pin-error')).toContainText('PIN galat hai');
   await typePin(page, '5678');
+  await expect(page.locator('#dlg-txn')).toBeVisible();
+  await page.locator('#txn-delete').click();
   await expect(page.locator('.txn-row', { hasText: 'atta' })).toHaveCount(0);
 });
 
@@ -245,10 +264,11 @@ test('the PIN verifies with the network dead — the delete simply queues', asyn
   await openCustomer(page, 'Ramu Halwai');
 
   backend.setMode('down');                          // hash is on-device; nothing to ask anyone
-  await openEntry(page, 'atta');
-  await page.locator('#txn-delete').click();
+  await page.locator('.txn-row', { hasText: 'atta' }).click();
   await expect(page.locator('#dlg-pin')).toBeVisible();
   await typePin(page, '1234');
+  await expect(page.locator('#dlg-txn')).toBeVisible();
+  await page.locator('#txn-delete').click();
 
   await expect(page.locator('.txn-row', { hasText: 'atta' })).toHaveCount(0);
   expect(backend.state.transactions.some((t) => t.id === 't1')).toBe(true);
@@ -318,7 +338,7 @@ test('the invite link asks for the PIN before it is ever copied', async ({ page 
   expect(await page.evaluate(() => window.__copied[0])).toContain('#s=');
 });
 
-test('removing a bill photo asks, and still only marks the form', async ({ page }) => {
+test('the existing-entry unlock also covers photo removal inside that edit', async ({ page }) => {
   const backend = createBackend(withPin('1234'));
   backend.state.transactions.push({
     id: 'tp1', user_name: 'u1', date: '2026-08-06',
@@ -328,13 +348,14 @@ test('removing a bill photo asks, and still only marks the form', async ({ page 
   await openLedger(page, backend);
   await openCustomer(page, 'Ramu Halwai');
 
-  await openEntry(page, 'photo wala');
+  await page.locator('.txn-row', { hasText: 'photo wala' }).click();
+  await expect(page.locator('#pin-title')).toHaveText('Entry badalne ke liye PIN');
+  await typePin(page, '1234');
+  await expect(page.locator('#dlg-txn')).toBeVisible();
   await page.locator('#txn-photo-view').click();
   await expect(page.locator('#dlg-photo')).toBeVisible();
   await page.locator('#photo-remove').click();
-  await expect(page.locator('#dlg-pin')).toBeVisible();
-  await expect(page.locator('#pin-title')).toHaveText('Photo hatane ke liye PIN');
-  await typePin(page, '1234');
+  await expect(page.locator('#dlg-pin')).toBeHidden();   // edit unlock is still in grace
 
   // unchanged post-confirm behaviour: the viewer closes, the form says so, and
   // the photo only really goes when the entry is saved
@@ -351,9 +372,8 @@ test('"PIN bhool gaye?" hands the locked-out owner over to the Master PIN', asyn
   const backend = createBackend(withPin('1234'));
   await openLedger(page, backend);
   await openCustomer(page, 'Ramu Halwai');
-  await openEntry(page, 'atta');
 
-  await page.locator('#txn-delete').click();
+  await page.locator('.txn-row', { hasText: 'atta' }).click();
   await expect(page.locator('#dlg-pin')).toBeVisible();
   await page.locator('#pin-forgot').click();
 
@@ -366,12 +386,15 @@ test('"PIN bhool gaye?" hands the locked-out owner over to the Master PIN', asyn
   await expect(page.locator('#dlg-pin')).toBeHidden();
   await expect(page.locator('#toast')).toContainText('App PIN lag gaya');
   expect(backend.state.transactions.some((t) => t.id === 't1')).toBe(true);
+  await expect(page.locator('#dlg-txn')).toBeHidden();
 
-  // the new PIN is what the gate wants now — and the reset did not leave a
-  // grace window behind for the delete that was abandoned
-  await page.locator('#txn-delete').click();
+  // The abandoned edit stays closed. Opening it again asks for the new PIN,
+  // because resetting the PIN deliberately leaves no grace window behind.
+  await page.locator('.txn-row', { hasText: 'atta' }).click();
   await expect(page.locator('#dlg-pin')).toBeVisible();
   await typePin(page, '5678');
+  await expect(page.locator('#dlg-txn')).toBeVisible();
+  await page.locator('#txn-delete').click();
   await expect(page.locator('.txn-row', { hasText: 'atta' })).toHaveCount(0);
 });
 
@@ -389,9 +412,10 @@ test('the grace window does not follow the phone into another khata', async ({ p
 
   // buy a grace window in khata A…
   await openCustomer(page, 'Ramu Halwai');
-  await openEntry(page, 'atta');
-  await page.locator('#txn-delete').click();
+  await page.locator('.txn-row', { hasText: 'atta' }).click();
   await typePin(page, '1234');
+  await expect(page.locator('#dlg-txn')).toBeVisible();
+  await page.locator('#txn-delete').click();
   await expect(page.locator('.txn-row', { hasText: 'atta' })).toHaveCount(0);
   await page.locator('#btn-back').click();
   await expect.poll(() => queueLen(page)).toBe(0);
@@ -406,12 +430,13 @@ test('the grace window does not follow the phone into another khata', async ({ p
   await openCustomer(page, 'Naya Khata Wala');
 
   // A's PIN bought nothing here — B asks, in B's own PIN
-  await openEntry(page, 'naya');
-  await page.locator('#txn-delete').click();
+  await page.locator('.txn-row', { hasText: 'naya' }).click();
   await expect(page.locator('#dlg-pin')).toBeVisible();
   await typePin(page, '1234');
   await expect(page.locator('#pin-error')).toContainText('PIN galat hai');
   await typePin(page, '5678');
+  await expect(page.locator('#dlg-txn')).toBeVisible();
+  await page.locator('#txn-delete').click();
   await expect(page.locator('.txn-row', { hasText: 'naya' })).toHaveCount(0);
 });
 
