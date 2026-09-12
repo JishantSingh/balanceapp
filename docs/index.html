@@ -207,8 +207,9 @@
       <div class="field">
         <span class="field-label">Photo <em>(optional)</em></span>
         <div class="photo-row">
-          <label class="btn btn-ghost photo-add"><img id="txn-photo-prev" class="photo-prev" alt="" hidden><span id="txn-photo-emoji">📷</span> <span id="txn-photo-label">Add photo</span><input id="txn-photo" type="file" accept="image/*" hidden></label>
+          <button type="button" id="txn-photo-add" class="btn btn-ghost photo-add" aria-haspopup="dialog" aria-controls="dlg-photo-source"><img id="txn-photo-prev" class="photo-prev" alt="" hidden><span id="txn-photo-emoji" aria-hidden="true">📷</span> <span id="txn-photo-label">Add photo</span></button>
           <button type="button" id="txn-photo-view" class="btn btn-ghost" hidden>View</button>
+          <input id="txn-photo" type="file" accept="image/*" hidden>
         </div>
       </div>
     </div>
@@ -218,6 +219,43 @@
       <span class="flex-spring"></span>
       <button type="button" class="btn btn-ghost" data-close>Cancel</button>
       <button type="submit" id="txn-save" class="btn btn-ink">Save entry</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Camera capture and gallery selection share photo processing after approval. -->
+<dialog id="dlg-photo-source" class="sheet" aria-labelledby="photo-source-title">
+  <form method="dialog">
+    <div id="photo-source-title" class="sheet-title">Add photo</div>
+    <div class="photo-sources">
+      <button type="button" id="photo-take" class="btn btn-ghost"><span aria-hidden="true">📷</span> Take photo</button>
+      <button type="button" id="photo-choose" class="btn btn-ghost"><span aria-hidden="true">🖼️</span> Choose from gallery</button>
+    </div>
+    <div class="sheet-actions">
+      <span class="flex-spring"></span>
+      <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-camera" class="sheet" aria-labelledby="camera-title">
+  <form method="dialog">
+    <div id="camera-title" class="sheet-title">Take photo</div>
+    <p id="camera-status" class="camera-status" role="status">Opening camera…</p>
+    <div class="camera-preview">
+      <video id="camera-video" autoplay muted playsinline aria-label="Live camera preview" hidden></video>
+      <img id="camera-shot" alt="Captured photo" hidden>
+    </div>
+    <div class="camera-actions">
+      <button type="button" id="camera-capture" class="btn btn-ink" disabled>Capture</button>
+      <button type="button" id="camera-retake" class="btn btn-ghost" hidden>Retake</button>
+      <button type="button" id="camera-use" class="btn btn-ink" hidden>Use photo</button>
+      <button type="button" id="camera-retry" class="btn btn-ghost" hidden>Try again</button>
+    </div>
+    <div class="sheet-actions">
+      <button type="button" id="camera-cancel" class="btn btn-ghost">Cancel</button>
+      <span class="flex-spring"></span>
+      <button type="button" id="camera-gallery" class="btn btn-ghost" hidden>Choose from gallery</button>
     </div>
   </form>
 </dialog>

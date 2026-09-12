@@ -77,3 +77,59 @@ export const TINY_PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
   'base64'
 );
+
+// Chromium's synthetic camera exercises real getUserMedia/video/canvas without
+// opening any physical camera or microphone on the developer's computer.
+export const CAMERA_TEST_OPTIONS = {
+  launchOptions: { args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] },
+};
+
+export async function trackCamera(page) {
+  await page.addInitScript(() => {
+    const getMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    window.cameraRequests = [];
+    window.cameraStreams = [];
+    window.cameraFailure = null;
+    window.cameraPermissionPending = false;
+    navigator.mediaDevices.getUserMedia = async (constraints) => {
+      window.cameraRequests.push(constraints);
+      if (window.cameraFailure) throw new DOMException('Test camera error', window.cameraFailure);
+      if (window.cameraPermissionPending) {
+        await new Promise((resolve) => { window.grantPendingCamera = resolve; });
+      }
+      const stream = await getMedia(constraints);
+      window.cameraStreams.push(stream);
+      return stream;
+    };
+  });
+}
+
+export async function openEntryCamera(page) {
+  await page.locator('#txn-photo-add').click();
+  await page.locator('#photo-take').click();
+  await expect(page.locator('#dlg-camera')).toBeVisible();
+}
+
+// Exercise the visible chooser and either live camera or gallery path.
+export async function chooseEntryPhoto(page, source = 'gallery', file = {
+  name: 'parchi.png', mimeType: 'image/png', buffer: TINY_PNG,
+}) {
+  if (source === 'camera') {
+    await openEntryCamera(page);
+    await expect(page.locator('#camera-capture')).toBeEnabled();
+    await page.locator('#camera-capture').click();
+    await expect(page.locator('#camera-shot')).toBeVisible();
+    await page.locator('#camera-use').click();
+    await expect(page.locator('#dlg-camera')).toBeHidden();
+    return;
+  }
+  await page.locator('#txn-photo-add').click();
+  await expect(page.locator('#dlg-photo-source')).toBeVisible();
+  const picker = page.waitForEvent('filechooser');
+  await page.locator('#photo-choose').click();
+  const chooser = await picker;
+  expect(await chooser.element().getAttribute('capture')).toBe(null);
+  await expect(page.locator('#dlg-photo-source')).toBeHidden();
+  await expect(page.locator('#dlg-txn')).toBeVisible();
+  await chooser.setFiles(file);
+}
