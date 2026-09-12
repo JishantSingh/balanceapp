@@ -2,6 +2,21 @@
 
 *Working doc for dev runs. Feature rationale and research live in [FEATURES.md](FEATURES.md).*
 
+## Photo controls — local preview, 12 Sep 2026
+
+Camera/gallery source chooser on `codex/photo-camera-controls` from updated
+`main` (PIN edit protection PR #1 is merged). Take photo now opens an in-app
+getUserMedia preview with Capture / Retake / Use photo. No camera file picker;
+gallery fallback for unavailable/denied access; tracks released on capture,
+cancel, background and navigation. Shared compression/preview/upload; failed
+selection preserves the form, Save waits for processing, and late results
+cannot leak into another entry. PWA shell cache v22. Camera/photo tests:
+24 passed; complete suite: 101 passed. Camera layout inspected at 360px;
+chooser at 320px and 360px. Preview assets verified and PWA update checked.
+Temporary HTTPS phone preview ready. Physical camera and test Google ledger
+results are not recorded; the manual checklist tracks those separately.
+Follow [PHOTO-CONTROLS-TESTING.md](PHOTO-CONTROLS-TESTING.md).
+
 ## Current state — as of 12 Aug 2026 (read this first on resume)
 
 - **Live app:** https://jishantsingh.github.io/balanceapp/ — GitHub Pages from `main:/docs` of `JishantSingh/balanceapp`. Shell cache `bahi-shell-v19`; bump on any shell change (users get the persistent update bar).

@@ -766,8 +766,26 @@ body {
   font-size: 0.85rem; line-height: 1.15;
 }
 
-/* .btn.btn-ghost variant on the <label> wrapping the file input */
-.photo-add { flex: 2; cursor: pointer; }
+.photo-row .photo-add { flex: 2; }
+.photo-row .btn:disabled, #txn-save:disabled, #txn-delete:disabled {
+  opacity: 0.55; cursor: wait;
+}
+.photo-sources { display: grid; gap: 10px; }
+.photo-sources .btn {
+  min-height: 48px; justify-content: flex-start; text-align: left;
+  white-space: normal;
+}
+
+.camera-status { font-size: 0.9rem; line-height: 1.45; margin-bottom: 12px; }
+.camera-status.err { color: var(--red); }
+.camera-preview video, .camera-preview img {
+  display: block; width: 100%; max-height: 48dvh;
+  object-fit: contain; background: #111; border-radius: 8px;
+}
+.camera-actions { display: flex; gap: 10px; margin-top: 14px; }
+.camera-actions .btn { flex: 1; min-height: 48px; }
+#dlg-camera .sheet-actions .btn { min-height: 48px; white-space: normal; }
+#camera-capture:disabled { opacity: 0.55; cursor: wait; }
 
 /* photo viewer dialog */
 .sheet-photo img {

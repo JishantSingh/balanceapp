@@ -2,7 +2,7 @@
    so edits are always live during a test run. */
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { extname, join, normalize } from 'node:path';
+import { extname, join, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..', 'docs');
@@ -25,7 +25,9 @@ createServer(async (req, res) => {
     let path = decodeURIComponent(new URL(req.url, 'http://x').pathname);
     if (path.endsWith('/')) path += 'index.html';
     const file = normalize(join(ROOT, path));
-    if (!file.startsWith(ROOT)) { res.writeHead(403).end(); return; }
+    // Also used behind the phone-preview tunnel: never serve a sibling whose
+    // name merely starts with "docs" (for example /docs-private).
+    if (!file.startsWith(ROOT + sep)) { res.writeHead(403).end(); return; }
     const body = await readFile(file);
     res.writeHead(200, {
       'Content-Type': TYPES[extname(file)] || 'application/octet-stream',
@@ -35,4 +37,4 @@ createServer(async (req, res) => {
   } catch {
     res.writeHead(404).end('not found');
   }
-}).listen(PORT, () => console.log(`serving docs/ on :${PORT}`));
+}).listen(PORT, '127.0.0.1', () => console.log(`serving docs/ on http://127.0.0.1:${PORT}`));

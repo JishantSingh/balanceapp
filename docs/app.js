@@ -52,6 +52,8 @@ let updateWaiting = false;                // a new app version is installed and 
 
 // photo form state: mode 'none' | 'existing' | 'new' | 'removed'
 let photoState = { mode: 'none', b64: null, id: null };
+let photoFormGen = 0;     // a decoded image belongs only to the form that selected it
+let photoProcessing = false;
 const photoCache = {};   // fileId -> dataURI (in-memory)
 const demoPhotos = {};   // demo fileId -> b64 (in-memory, demo mode only)
 
@@ -1175,6 +1177,7 @@ let pendingInvite = null;    // an invite waiting on the switch dialog
 
 function wipeLedgerData() {
   ledgerGen++;   // whatever is on the wire now belongs to the khata we are leaving
+  resetPhotoControls();
   [LS_CACHE, LS_QUEUE, LS_FAILED, LS_DEMO, LS_THUMBS].forEach((k) => localStorage.removeItem(k));
   idbPhotosClear();
   db = { users: [], transactions: [] };
@@ -1447,6 +1450,200 @@ function reminderLink(u, bal) {
 
 // ---------------------------------------------------------------- photos
 
+function resetPhotoControls() {
+  photoFormGen++;
+  photoProcessing = false;
+  $('txn-photo').value = '';
+  closeCamera();
+  if ($('dlg-photo-source').open) $('dlg-photo-source').close();
+  setPhotoUI();
+}
+
+function chooseGalleryPhoto() {
+  if (photoProcessing || !$('dlg-txn').open) return;
+  closeCamera();
+  $('dlg-photo-source').close();
+  // Stay in the button's user gesture: awaiting anything here can prevent
+  // mobile browsers from opening the file picker.
+  $('txn-photo').click();
+}
+
+async function handleTxnPhoto(e) {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = '';     // choosing the same file again must still fire change
+  return processTxnPhoto(file);
+}
+
+async function processTxnPhoto(file) {
+  if (!file || photoProcessing || !$('dlg-txn').open) return;
+  const form = photoFormGen;
+  const ledger = ledgerGen;
+  const customer = currentCustomerId;
+  const stillCurrent = () => form === photoFormGen && ledger === ledgerGen &&
+    customer === currentCustomerId && $('dlg-txn').open;
+  photoProcessing = true;
+  setPhotoUI();
+  busy(true);
+  try {
+    const b64 = await compressImage(file);
+    if (stillCurrent()) photoState = { mode: 'new', b64, id: photoState.id };
+  } catch (err) {
+    if (stillCurrent()) toast(err.message, true);
+  } finally {
+    busy(false);
+    if (form === photoFormGen) {
+      photoProcessing = false;
+      setPhotoUI();
+    }
+  }
+}
+
+// Live capture is local. Only Use photo passes the reviewed frame into the
+// same processing path as gallery selection; no file picker opens here.
+let cameraSession = null;
+
+function cameraIsCurrent(session) {
+  return cameraSession === session && session.form === photoFormGen &&
+    session.ledger === ledgerGen && session.customer === currentCustomerId &&
+    $('dlg-txn').open && $('dlg-camera').open;
+}
+
+function stopCameraStream(session) {
+  if (!session || !session.stream) return;
+  const stream = session.stream;
+  session.stream = null;
+  stream.getTracks().forEach((track) => track.stop());
+  if ($('camera-video').srcObject === stream) {
+    $('camera-video').pause();
+    $('camera-video').srcObject = null;
+  }
+}
+
+function clearCameraSession() {
+  const session = cameraSession;
+  cameraSession = null; // invalidate permission/capture promises before cleanup
+  stopCameraStream(session);
+  if (session && session.shotUrl) URL.revokeObjectURL(session.shotUrl);
+  $('camera-shot').removeAttribute('src');
+}
+
+function closeCamera() {
+  clearCameraSession();
+  if ($('dlg-camera').open) $('dlg-camera').close();
+}
+
+function cameraError(session, message) {
+  if (!cameraIsCurrent(session)) return;
+  session.phase = 'error';
+  stopCameraStream(session);
+  $('camera-status').textContent = message;
+  $('camera-status').classList.add('err');
+  $('camera-video').hidden = true;
+  $('camera-capture').hidden = true;
+  $('camera-retry').hidden = false;
+  $('camera-gallery').hidden = false;
+}
+
+function cameraErrorMessage(err) {
+  if (err.name === 'NotAllowedError' || err.name === 'SecurityError') {
+    return 'Camera access is blocked. Allow it in your browser settings and try again, or choose from gallery.';
+  }
+  if (err.name === 'NotFoundError' || err.name === 'OverconstrainedError') {
+    return 'No camera is available. Connect a camera and try again, or choose from gallery.';
+  }
+  return 'Camera could not start. Close any other app using it and try again, or choose from gallery.';
+}
+
+async function startCamera() {
+  if (photoProcessing || !$('dlg-txn').open) return;
+  $('dlg-photo-source').close();
+  clearCameraSession();
+  const session = {
+    form: photoFormGen, ledger: ledgerGen, customer: currentCustomerId,
+    stream: null, shot: null, shotUrl: null, phase: 'starting',
+  };
+  cameraSession = session;
+  $('camera-status').textContent = 'Opening camera… Allow camera access if asked.';
+  $('camera-status').classList.remove('err');
+  $('camera-capture').hidden = false;
+  $('camera-capture').disabled = true;
+  ['camera-video', 'camera-shot', 'camera-retake', 'camera-use', 'camera-retry', 'camera-gallery']
+    .forEach((id) => { $(id).hidden = true; });
+  if (!$('dlg-camera').open) showSheet($('dlg-camera'));
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    cameraError(session, 'Camera access is not available here. Open this page in a browser with camera support, or choose from gallery.');
+    $('camera-retry').hidden = true;
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+    });
+    // A permission prompt may outlive Cancel, a ledger switch or a newer
+    // attempt. Release a late stream without touching the new UI.
+    if (!cameraIsCurrent(session)) {
+      stream.getTracks().forEach((track) => track.stop());
+      return;
+    }
+    session.stream = stream;
+    stream.getVideoTracks().forEach((track) => track.addEventListener('ended', () => {
+      if (session.phase === 'live') cameraError(session, 'Camera stopped. Try again or choose from gallery.');
+    }));
+    const video = $('camera-video');
+    video.srcObject = stream;
+    video.hidden = false;
+    await video.play();
+    if (!cameraIsCurrent(session)) return;
+    if (!video.videoWidth || !video.videoHeight) throw new Error('Camera has no image');
+    session.phase = 'live';
+    $('camera-status').textContent = 'Point the camera at your bill, then tap Capture.';
+    $('camera-capture').disabled = false;
+  } catch (err) {
+    cameraError(session, cameraErrorMessage(err));
+  }
+}
+
+async function captureCameraPhoto() {
+  const session = cameraSession;
+  if (!session || !cameraIsCurrent(session) || session.phase !== 'live') return;
+  const video = $('camera-video');
+  if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) return;
+  session.phase = 'capturing';
+  $('camera-capture').disabled = true;
+  try {
+    const canvas = document.createElement('canvas');
+    const scale = Math.min(1, 1280 / Math.max(video.videoWidth, video.videoHeight));
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+    canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+    canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+    const shot = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.95));
+    if (!cameraIsCurrent(session)) return;
+    if (!shot) throw new Error('Empty capture');
+    session.shot = shot;
+    session.shotUrl = URL.createObjectURL(shot);
+    session.phase = 'review';
+    stopCameraStream(session); // the camera is off while reviewing the still
+    $('camera-shot').src = session.shotUrl;
+    $('camera-shot').hidden = false;
+    $('camera-video').hidden = true;
+    $('camera-status').textContent = 'Check that the bill is clear and readable.';
+    $('camera-capture').hidden = true;
+    $('camera-retake').hidden = false;
+    $('camera-use').hidden = false;
+  } catch (err) {
+    cameraError(session, 'Could not capture a photo. Try again or choose from gallery.');
+  }
+}
+
+function useCameraPhoto() {
+  const session = cameraSession;
+  if (!session || !cameraIsCurrent(session) || session.phase !== 'review') return;
+  const shot = session.shot;
+  closeCamera();
+  processTxnPhoto(shot);
+}
+
 async function compressImage(file) {
   // createImageBitmap downsamples DURING decode (hardware path) — on a cheap
   // phone this is the difference between ~0.3s and several frozen seconds of
@@ -1511,6 +1708,10 @@ function setPhotoUI() {
     label.textContent = 'Add photo';
     view.hidden = true;
   }
+  if (photoProcessing) label.textContent = 'Photo ban rahi hai…';
+  ['txn-photo-add', 'txn-photo-view', 'txn-save', 'txn-delete'].forEach((id) => {
+    $(id).disabled = photoProcessing;
+  });
 }
 
 // Removing a bill photo now lives in the viewer, behind a confirm — you have to
@@ -2231,6 +2432,7 @@ function init() {
   // customer screen
   $('btn-back').addEventListener('click', () => history.back());
   window.addEventListener('popstate', (e) => {
+    closeCamera();
     if (e.state && e.state.customer) openCustomer(e.state.customer, false);
     else goHome();
   });
@@ -2251,22 +2453,23 @@ function init() {
   });
 
   // txn photo controls
-  $('txn-photo').addEventListener('change', async (e) => {
-    const file = e.target.files && e.target.files[0];
-    e.target.value = '';
-    if (!file) return;
-    const label = $('txn-photo-label');
-    label.textContent = 'Photo ban rahi hai…';
-    busy(true);
-    try {
-      const b64 = await compressImage(file);
-      photoState = { mode: 'new', b64, id: photoState.id };
-    } catch (err) {
-      toast(err.message, true);
-    } finally {
-      busy(false);
-      setPhotoUI();
-    }
+  $('txn-photo-add').addEventListener('click', () => {
+    $('photo-source-title').textContent = photoState.mode === 'new' || photoState.mode === 'existing'
+      ? 'Change photo' : 'Add photo';
+    showSheet($('dlg-photo-source'));
+  });
+  $('photo-take').addEventListener('click', startCamera);
+  $('photo-choose').addEventListener('click', chooseGalleryPhoto);
+  $('txn-photo').addEventListener('change', handleTxnPhoto);
+  $('camera-capture').addEventListener('click', captureCameraPhoto);
+  $('camera-retake').addEventListener('click', startCamera);
+  $('camera-use').addEventListener('click', useCameraPhoto);
+  $('camera-retry').addEventListener('click', startCamera);
+  $('camera-gallery').addEventListener('click', chooseGalleryPhoto);
+  $('camera-cancel').addEventListener('click', closeCamera);
+  $('dlg-camera').addEventListener('cancel', clearCameraSession);
+  $('dlg-camera').addEventListener('close', () => {
+    if (!$('dlg-camera').open) clearCameraSession();
   });
   $('txn-photo-view').addEventListener('click', viewCurrentPhoto);
   $('photo-remove').addEventListener('click', (e) => {
@@ -2287,6 +2490,7 @@ function init() {
 
   // txn dialog
   $('form-txn').addEventListener('submit', (e) => {
+    if (photoProcessing) { e.preventDefault(); return; }
     const amount = parseFloat($('txn-amount').value.replace(/[,\s]/g, ''));
     const errEl = $('txn-error');
     errEl.hidden = true;
@@ -2497,6 +2701,7 @@ function init() {
   // behind for whatever opens next — audit 0.2's other half. It also hands the
   // overlays back down to whatever is underneath it.
   document.querySelectorAll('dialog').forEach((d) => d.addEventListener('close', () => {
+    if (d.id === 'dlg-txn' && !d.open) resetPhotoControls();
     disarmConfirm();
     moveOverlays();
   }));
@@ -2509,7 +2714,9 @@ function init() {
     // The app went to the background — the phone is on the counter again, and
     // the PIN's grace window has no business surviving that.
     if (document.visibilityState === 'hidden') pinOkUntil = 0;
+    if (document.visibilityState === 'hidden') closeCamera();
   });
+  window.addEventListener('pagehide', closeCamera);
 
   // resync when network returns
   window.addEventListener('online', () => { setOffline(false); processQueue(); });
@@ -2517,7 +2724,7 @@ function init() {
 
   // a link tapped while the app is already open (installed PWAs stay alive for
   // days) is same-document navigation — only hashchange ever hears about it
-  window.addEventListener('hashchange', () => { dispatchLink(); });
+  window.addEventListener('hashchange', () => { closeCamera(); dispatchLink(); });
 
   // the merchant's own way out of a customer's passbook (audit 1.1)
   $('pb-mine-go').addEventListener('click', () => {
@@ -2612,6 +2819,7 @@ function openExistingTxn(txn) {
 }
 
 function openTxnForm(type, txn) {
+  resetPhotoControls();
   disarmConfirm();   // an arming can never survive into another entry
   editingTxnId = txn ? txn.id : null;
   setTxnFormType(type);
