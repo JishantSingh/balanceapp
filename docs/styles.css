@@ -428,7 +428,7 @@ body {
 
 .txn-row {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   border-bottom: 1px solid var(--border);
   cursor: pointer;
   animation: rise 0.4s cubic-bezier(0.2, 0.7, 0.2, 1) both;
@@ -437,8 +437,8 @@ body {
 .txn-ro { cursor: default; }
 .txn-ro:hover { background: none; }
 
-.txn-cell { padding: 11px 8px; }
-.txn-cell.gave { grid-column: 1; border-right: 1px solid var(--border); }
+.txn-cell { padding: 11px 8px; min-width: 0; align-self: center; }
+.txn-cell.gave { grid-column: 1; }
 .txn-cell.got { grid-column: 2; text-align: right; }
 .txn-amt { font-size: 1.05rem; font-weight: 700; font-variant-numeric: tabular-nums; }
 .txn-cell.gave .txn-amt { color: var(--red); }
@@ -447,6 +447,24 @@ body {
 .txn-date { font-size: 0.7rem; color: var(--text-3); margin-top: 3px; font-variant-numeric: tabular-nums; }
 .txn-body { display: flex; align-items: center; gap: 10px; }
 .txn-text { flex: 1; min-width: 0; }
+.txn-text { display: block; width: 100%; background: none; border: 0; padding: 0; color: inherit; text-align: inherit; font: inherit; cursor: pointer; }
+.txn-text .txn-amt, .txn-text .txn-note, .txn-text .txn-date { display: block; }
+.txn-cell.gave .txn-note { color: var(--red); }
+.txn-cell.got .txn-note { color: var(--green); }
+.photo-strip { display: flex; gap: 8px; overflow-x: auto; overflow-y: hidden; max-width: 100%; min-width: 0; padding: 4px 0; overscroll-behavior-x: contain; scrollbar-width: thin; scroll-snap-type: x proximity; }
+.photo-tile { flex: 0 0 64px; min-width: 0; scroll-snap-align: start; text-align: center; }
+.photo-tile > button:first-child { display: block; width: 64px; padding: 0; border: 0; background: none; border-radius: 8px; cursor: pointer; }
+.photo-tile .txn-thumb { display: block; width: 64px; height: 64px; object-fit: cover; }
+.photo-tile small { display: block; font-size: 0.7rem; color: var(--text-2); }
+.photo-tile .photo-error { color: var(--red); }
+.photo-tile .photo-retry { border: 0; padding: 5px 1px; min-height: 32px; background: none; color: var(--blue-text); font: inherit; font-size: 0.75rem; cursor: pointer; }
+.draft-photo-strip { margin-top: 12px; }
+.photo-viewer-nav { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.photo-viewer-nav .btn { min-width: 44px; }
+#photo-swipe-area { min-height: 96px; }
+#photo-swipe-area.swipe-enabled { touch-action: pan-y pinch-zoom; }
+.photo-swipe-hint { margin: 8px 0 0; text-align: center; color: var(--text-3); font-size: 0.75rem; }
+#photo-status { color: var(--text-2); font-size: 0.85rem; overflow-wrap: anywhere; }
 .txn-thumb {
   width: 44px; height: 44px; flex: none;
   border-radius: 8px;

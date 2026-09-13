@@ -22,7 +22,7 @@ test('deleting an entry whose add is on the wire must not lose the entry behind 
   await expect.poll(() => queueLen(page)).toBe(2);
 
   // now delete the FIRST entry, while its own add is still on the wire
-  await page.locator('.txn-row', { hasText: 'pehli' }).click();
+  await page.locator('.txn-row', { hasText: 'pehli' }).locator('.txn-text').click();
   const del = page.locator('#txn-delete');
   await del.click();                       // arms
   await del.click();                       // confirms
@@ -53,7 +53,7 @@ test('an entry edited across its own sync still saves, under the id the sheet ga
   await expect.poll(() => backend.state.requests.length).toBeGreaterThan(1);
 
   // open it for editing while it still carries its temporary id…
-  await page.locator('.txn-row', { hasText: 'nayi parchi' }).click();
+  await page.locator('.txn-row', { hasText: 'nayi parchi' }).locator('.txn-text').click();
   await expect(page.locator('#dlg-txn')).toBeVisible();
 
   // …and let the add land underneath the open dialog: the row's id changes

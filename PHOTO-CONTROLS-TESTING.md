@@ -1,5 +1,9 @@
 # Photo controls: preview and acceptance
 
+This records the original single-photo camera release. For v9 multiple photos,
+the current acceptance matrix and rollout requirements are in
+[MULTIPLE-PHOTOS.md](MULTIPLE-PHOTOS.md).
+
 Add photo / Change opens Take photo, Choose from gallery, and Cancel. Take
 photo opens an in-app camera via `getUserMedia` with Capture, Retake and Use
 photo. It prefers the rear lens, requests no microphone and never opens a

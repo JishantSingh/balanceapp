@@ -205,7 +205,7 @@
         <input id="txn-date" type="date" required>
       </label>
       <div class="field">
-        <span class="field-label">Photo <em>(optional)</em></span>
+        <span class="field-label">Photos <em>(optional)</em></span>
         <div class="photo-row">
           <button type="button" id="txn-photo-add" class="btn btn-ghost photo-add" aria-haspopup="dialog" aria-controls="dlg-photo-source"><img id="txn-photo-prev" class="photo-prev" alt="" hidden><span id="txn-photo-emoji" aria-hidden="true">📷</span> <span id="txn-photo-label">Add photo</span></button>
           <button type="button" id="txn-photo-view" class="btn btn-ghost" hidden>View</button>
@@ -213,6 +213,8 @@
         </div>
       </div>
     </div>
+    <div id="txn-photo-list" class="photo-strip draft-photo-strip" aria-label="Attached photos" hidden></div>
+    <p id="txn-photo-limit" class="field-help" hidden></p>
     <p id="txn-error" class="form-error" hidden></p>
     <div class="sheet-actions">
       <button type="button" id="txn-delete" class="btn btn-danger-ghost" hidden>Delete</button>
@@ -382,9 +384,20 @@
 <!-- ============ PHOTO VIEWER ============ -->
 <dialog id="dlg-photo" class="sheet sheet-photo">
   <form method="dialog">
-    <img id="photo-img" alt="Attached bill photo">
+    <div class="photo-viewer-nav">
+      <button type="button" id="photo-prev" class="btn btn-ghost" aria-label="Previous photo" hidden>‹</button>
+      <span id="photo-counter" aria-live="polite"></span>
+      <button type="button" id="photo-next" class="btn btn-ghost" aria-label="Next photo" hidden>›</button>
+    </div>
+    <div id="photo-swipe-area">
+      <img id="photo-img" alt="Attached bill photo" draggable="false">
+    </div>
+    <p id="photo-swipe-hint" class="photo-swipe-hint" hidden>Swipe left or right to change photo</p>
+    <p id="photo-status" role="status" hidden></p>
     <div class="sheet-actions">
+      <button type="button" id="photo-replace" class="btn btn-ghost" hidden>Replace</button>
       <button type="button" id="photo-remove" class="btn btn-danger-ghost" hidden>Photo hatayein</button>
+      <button type="button" id="photo-retry" class="btn btn-ghost" hidden>Retry upload</button>
       <span class="flex-spring"></span>
       <button type="submit" class="btn btn-ghost">Close</button>
     </div>

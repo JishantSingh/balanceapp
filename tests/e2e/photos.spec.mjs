@@ -47,7 +47,7 @@ test('cancelling the chooser, camera or gallery preserves the draft and its phot
   const backend = withPhoto();
   await openLedger(page, backend);
   await openCustomer(page, 'Ramu Halwai');
-  await page.locator('.txn-row', { hasText: 'atta' }).click();
+  await page.locator('.txn-row', { hasText: 'atta' }).locator('.txn-text').click();
   await page.locator('#txn-amount').fill('123');
   await page.locator('#txn-comment').fill('keep this note');
   await page.locator('#txn-date').fill('2026-08-09');
@@ -72,7 +72,7 @@ test('an unreadable image keeps the previous photo and a replacement can be sele
   const backend = withPhoto();
   await openLedger(page, backend);
   await openCustomer(page, 'Ramu Halwai');
-  await page.locator('.txn-row', { hasText: 'atta' }).click();
+  await page.locator('.txn-row', { hasText: 'atta' }).locator('.txn-text').click();
   await chooseEntryPhoto(page, 'gallery', {
     name: 'bad.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('not an image'),
   });
@@ -153,7 +153,7 @@ test('camera replacement stays behind the edit PIN and uploads only when saved',
   const backend = withPhoto('1234');
   await openLedger(page, backend);
   await openCustomer(page, 'Ramu Halwai');
-  await page.locator('.txn-row', { hasText: 'atta' }).click();
+  await page.locator('.txn-row', { hasText: 'atta' }).locator('.txn-text').click();
   await expect(page.locator('#dlg-pin')).toBeVisible();
   await expect(page.locator('#txn-photo-add')).toBeHidden();
   for (const digit of '1234') await page.locator(`#pin-grid [data-k="${digit}"]`).click();
@@ -196,7 +196,7 @@ test('the camera path also saves and opens photos in the phone preview demo', as
   await page.locator('#btn-gave').click();
   await page.locator('#txn-amount').fill('42');
   await chooseEntryPhoto(page, 'camera');
-  await expect(page.locator('#txn-photo-prev')).toBeVisible();
+  await expect(page.locator('#txn-photo-list .txn-thumb')).toBeVisible();
   await page.locator('#txn-save').click();
   await page.locator('img.txn-thumb').first().click();
   await expect(page.locator('#photo-img')).toHaveAttribute('src', /^data:image/);

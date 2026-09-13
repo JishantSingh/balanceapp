@@ -20,7 +20,7 @@ There is no central server, no company in the middle, and nothing to pay — eve
 - Customer list with **due / advance / settled** balances, search, totals
 - Per-customer two-column ledger (**You gave** / **You got**), month-wise
 - Add / edit / delete entries and customers (with double-tap confirm) — the buttons say **Given** (red) and **Received** (green)
-- **Bill / parchi photo per entry** — stored in a "Bahi Photos" folder in *your* Drive, served only through your own API, never made public
+- **Up to five bill / parchi photos per entry** with v9 — camera or multi-file gallery, horizontally scrolling thumbnails, PIN-free viewing, and PIN-protected editing. Stored in a "Bahi Photos" folder in *your* Drive, never made public. Older backends retain one-photo controls.
 - **WhatsApp payment reminders** — free, via `wa.me` links with an editable message template (`{name}`, `{amount}`, `{merchant}`)
 - **Customer passbook links** — each reminder can carry a private read-only link where that customer sees their own ledger and live balance; revoke it anytime by clearing their `token` cell in the sheet
 - Tap-to-call customers
@@ -85,6 +85,11 @@ If a merchant is already running an older version of the script:
 
 Nothing to change in the sheet by hand: the script adds any missing columns (`token`, `photo`, `cohort`, `last_reminded`) itself on first use.
 
+For v9, see [the multiple-photo rollout guide](MULTIPLE-PHOTOS.md). Standard-mode
+customers need **New version** on their existing deployment, with the same URL,
+credentials and scopes. Once multiple-photo data exists, keep the compatible v9
+backend even if the frontend is rolled back.
+
 ## Distributing to many merchants
 
 The clean "AppSheet-like" flow:
@@ -112,7 +117,8 @@ Numbers are normalized with the country code from Settings (default `91`).
 | sheet | columns |
 |---|---|
 | `user` | `user_id`, `name`, `created_at`, `phone`, `token` (secret that powers that customer's passbook link — clear the cell to revoke it) |
-| `transaction` | `id`, `user_name` (holds the customer's `user_id`), `date`, `type` (`given` \| `received`), `amount`, `comment`, `photo` (Drive file id of the bill/parchi image, blank if none) |
+| `transaction` | `id`, `user_name` (holds the customer's `user_id`), `date`, `type` (`given` \| `received`), `amount`, `comment`, `photo` (legacy primary Drive file id), `photos` (ordered JSON array of `{id,fileId}`) |
+| `photo_uploads` | Persistent upload reservations, replacement targets and cancellation/restore history; managed by v9, do not delete this tab |
 
 Balance per customer = Σ`given` − Σ`received`. Positive → customer owes the merchant ("due"), negative → advance.
 
@@ -132,3 +138,7 @@ cd docs && python3 -m http.server 8742   # http://localhost:8742 — use demo mo
 ```
 
 No build step, no dependencies: `index.html` + `styles.css` + `app.js` + `sw.js`. When you change shell files, bump `CACHE` in `sw.js` so installed apps pick up the update.
+
+`npm test` runs the actual Apps Script source against mocked Google services,
+then the Playwright browser suite. [MULTIPLE-PHOTOS.md](MULTIPLE-PHOTOS.md) records
+the feature contract, automated evidence and separate physical-device checklist.

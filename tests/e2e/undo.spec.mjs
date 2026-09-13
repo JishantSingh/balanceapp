@@ -11,7 +11,7 @@ const queueLen = (page) =>
   page.evaluate(() => JSON.parse(localStorage.getItem('bahi.queue') || '[]').length);
 
 async function deleteAtta(page) {
-  await page.locator('.txn-row', { hasText: 'atta' }).click();
+  await page.locator('.txn-row', { hasText: 'atta' }).locator('.txn-text').click();
   const del = page.locator('#txn-delete');
   await del.click();                       // arms
   await expect(del).toHaveText('Pakka?');
@@ -81,7 +81,7 @@ test('a drained-delete undo restores the note AND the photo from the device stor
   await expect(page.locator('img.txn-thumb')).toBeVisible({ timeout: 10_000 });
 
   // delete syncs (backend up), then undo re-creates the entry
-  await page.locator('.txn-row', { hasText: 'parchi #42' }).click();
+  await page.locator('.txn-row', { hasText: 'parchi #42' }).locator('.txn-text').click();
   const del = page.locator('#txn-delete');
   await del.click();
   await expect(del).toHaveText('Pakka?');

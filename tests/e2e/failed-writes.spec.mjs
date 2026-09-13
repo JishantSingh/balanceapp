@@ -83,7 +83,7 @@ test('a refused edit rolls the entry back to what the sheet still holds', async 
   await expect(page.locator('#bal-amt')).toContainText('300');
 
   backend.setMode('badkey');
-  await page.locator('.txn-row', { hasText: 'atta' }).click();
+  await page.locator('.txn-row', { hasText: 'atta' }).locator('.txn-text').click();
   await page.locator('#txn-amount').fill('600');
   await page.locator('#txn-save').click();
   await expect(page.locator('#dlg-txn')).toBeHidden();

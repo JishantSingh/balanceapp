@@ -1,15 +1,17 @@
 /**
- * Bahi — Google Sheets backend API (Khatabook-style udhaar ledger) · v8
+ * Bahi — Google Sheets backend API (Khatabook-style udhaar ledger) · v9
  *
  * Sheets (columns are created/added automatically):
  *   "user":        user_id | name | created_at | phone | cohort | last_reminded | token
- *   "transaction": id | user_name | date | type | amount | comment | photo
+ *   "transaction": id | user_name | date | type | amount | comment | photo | photos
+ *   "photo_uploads": persistent attachment reservations and cancellation history
  *     - "user_name" holds the customer's user_id (kept for AppSheet back-compat)
  *     - "type" is "given" (udhaar) or "received" (payment)
  *     - "cohort" is a reminder frequency: off | weekly | 15days | monthly
  *     - "token" is a per-customer secret for the read-only passbook link
  *       ("off" = link deliberately revoked; see REVOKED_TOKEN below)
- *     - "photo" is a Drive file id of an attached bill photo
+ *     - "photos" is an ordered JSON array of {id, fileId}, up to five photos
+ *     - "photo" is the first completed Drive file id for legacy clients
  *
  * Photos are stored in a "Bahi Photos" folder in YOUR Drive and served only
  * through this API (key required) — they are never made public.
@@ -36,19 +38,15 @@
  *
  * Setup:
  *  1. Spreadsheet → Extensions → Apps Script; paste this file into Code.gs.
- *  2. Project Settings (gear) → show appsscript.json → paste the manifest from
- *     this repo (scopes: this spreadsheet + files created by this app + the
- *     Apps Script API, which the self-updater uses to update this script).
- *  3. Enable the Apps Script API for your account (one-time):
- *     script.google.com/home/usersettings → "Google Apps Script API" → On.
- *  4. In the editor, run the function `setup` once and grant access — the
- *     log prints your API key. (Upgrading from v3? Your existing API_KEY
+ *  2. Project Settings (gear) → show appsscript.json → paste the standard
+ *     manifest from this repo (this spreadsheet, app-created Drive files,
+ *     external requests). No new scopes are needed for v9.
+ *  3. In the editor, run the function `setup` once and grant access — the
+ *     log prints your API key and Master PIN. (Upgrading from v3? Your API_KEY
  *     constant is adopted automatically; you can leave it in place.)
- *  5. Deploy → New deployment → Web app (Execute as: Me, Access: Anyone).
- *     After this, the script keeps ITSELF up to date (daily check against
- *     the public repo) — no more manual pasting for normal releases.
- *     Releases that need new permissions can't auto-apply (by design) and
- *     will wait for you.
+ *  4. Deploy → New deployment → Web app (Execute as: Me, Access: Anyone).
+ *     Updates in standard mode require Manage deployments → New version.
+ *     Optional self-updating mode and its extra permissions are in SETUP.md.
  */
 
 // Legacy shim (pre-v4 installs set the key here). The real key lives in
@@ -90,14 +88,16 @@ function adminPin_() {
 
 // Backend version + where released code is published. The self-updater
 // refuses anything whose hashes don't match the release manifest.
-const BAHI_VERSION = 8;
+const BAHI_VERSION = 9;
 const RELEASE_BASE = 'https://raw.githubusercontent.com/JishantSingh/balanceapp/main/apps-script/';
 const RELEASE_MANIFEST = RELEASE_BASE + 'release.json';
 
 const USER_SHEET = 'user';
 const USER_HEADERS = ['user_id', 'name', 'created_at', 'phone', 'cohort', 'last_reminded', 'token'];
 const TXN_SHEET = 'transaction';
-const TXN_HEADERS = ['id', 'user_name', 'date', 'type', 'amount', 'comment', 'photo'];
+const TXN_HEADERS = ['id', 'user_name', 'date', 'type', 'amount', 'comment', 'photo', 'photos'];
+const MAX_PHOTOS = 5;
+const UPLOAD_HEADERS = ['upload_id', 'txn_id', 'file_id', 'replaces_id', 'replaces_file_id', 'state', 'position', 'digest', 'source_txn'];
 const PHOTO_FOLDER = 'Bahi Photos';
 const MAX_PHOTO_B64 = 2 * 1024 * 1024; // ~1.5MB image
 
@@ -155,6 +155,12 @@ function handle(req) {
         return respond({ ok: true, data: withLock(deleteTxn, req.id) });
       case 'photo':
         return respond({ ok: true, data: getPhoto(req.id) });
+      case 'uploadTxnPhoto':
+        return respond({ ok: true, data: withLock(uploadTxnPhoto, req.id, req.attachmentId, req.b64, req.replacesId) });
+      case 'removeTxnPhoto':
+        return respond({ ok: true, data: withLock(removeTxnPhoto, req.id, req.attachmentId) });
+      case 'restoreTxnPhoto':
+        return respond({ ok: true, data: withLock(restoreTxnPhoto, req.id, req.attachmentId, req.sourceTxnId, req.sourceAttachmentId) });
       case 'remindLog':
         return respond({ ok: true, data: withLock(remindLog, req.id) });
       case 'setTxnPin':
@@ -165,7 +171,7 @@ function handle(req) {
         return respond({ ok: false, error: 'Unknown action: ' + req.action });
     }
   } catch (err) {
-    return respond({ ok: false, error: String(err) });
+    return respond({ ok: false, error: String(err), code: err.code || 'SERVER_ERROR' });
   }
 }
 
@@ -182,7 +188,7 @@ function withLock(fn) {
   try {
     return fn.apply(null, args);
   } finally {
-    lock.releaseLock();
+    try { SpreadsheetApp.flush(); } finally { lock.releaseLock(); }
   }
 }
 
@@ -247,11 +253,12 @@ function listAll() {
   const users = listRows(userSheet(), USER_HEADERS);
   const txns = listRows(txnSheet(), TXN_HEADERS);
   users.forEach(function (u) { delete u._row; });
-  txns.forEach(function (t) { delete t._row; });
+  txns.forEach(function (t) { delete t._row; shapePhotos(t); });
   return {
     users: users,
     transactions: txns,
     v: BAHI_VERSION,
+    capabilities: { multiPhoto: true, maxPhotos: MAX_PHOTOS },
     // App-PIN material for offline verification on every device sharing this
     // ledger — salt+hash only, never the PIN. null = no PIN configured.
     pin: txnPin_(),
@@ -437,23 +444,28 @@ function remindLog(id) {
 function deleteUser(id) {
   const uSheet = userSheet();
   const row = findRow(uSheet, 'user_id', id);
-  if (row === -1) return { deleted: id, already: true };
+  if (row === -1) { cleanupRetiredPhotos(); return { deleted: id, already: true }; }
 
   const tSheet = txnSheet();
   const map = headerMap(tSheet);
   const lastRow = tSheet.getLastRow();
   let removed = 0;
+  let photoFiles = [];
   if (lastRow >= 2) {
     const values = tSheet.getRange(2, 1, lastRow - 1, tSheet.getLastColumn()).getValues();
     for (let i = values.length - 1; i >= 0; i--) {
       if (String(values[i][map.user_name]) === String(id)) {
-        if (map.photo !== undefined && values[i][map.photo]) trashPhoto(String(values[i][map.photo]));
+        photoFiles = photoFiles.concat(preparePhotoDeletion(String(values[i][map.id]),
+          shapePhotos(readRow(tSheet, TXN_HEADERS, i + 2)).photos));
         tSheet.deleteRow(i + 2);
         removed++;
       }
     }
   }
   uSheet.deleteRow(row);
+  SpreadsheetApp.flush();
+  photoFiles.forEach(trashUnreferenced);
+  cleanupRetiredPhotos(); // includes earlier rows from an interrupted customer delete
   return { deleted: id, transactionsRemoved: removed };
 }
 
@@ -526,19 +538,16 @@ function buildTxn(id, data, existingPhoto) {
     type: type,
     amount: amount,
     comment: String(data.comment || ''),
-    photo: resolvePhoto(data.photo, existingPhoto),
+    photo: existingPhoto || '',
   };
 }
 
 // data.photo: undefined → keep existing · '' → remove · base64 → replace
-function resolvePhoto(incoming, existing) {
-  if (incoming === undefined) return existing || '';
-  if (incoming === '') {
-    if (existing) trashPhoto(existing);
-    return '';
-  }
-  if (existing) trashPhoto(existing);
-  return savePhoto(String(incoming));
+function resolveLegacyPhotos(incoming, photos) {
+  if (incoming === undefined) return photos;
+  if (incoming === '') return photos.slice(1);
+  const fileId = savePhoto(String(incoming));
+  return [{ id: fileId, fileId: fileId }].concat(photos.slice(1));
 }
 
 function addTxn(data, cid) {
@@ -549,11 +558,15 @@ function addTxn(data, cid) {
     // A replay — see addUser. Answering before buildTxn also means the photo
     // bytes riding along on this retry are never uploaded a second time.
     const was = findRow(sheet, 'id', hit);
-    return was === -1 ? { id: hit, replayed: true } : readRow(sheet, TXN_HEADERS, was);
+    return was === -1 ? { id: hit, replayed: true } : shapePhotos(readRow(sheet, TXN_HEADERS, was));
   }
   const txn = buildTxn(shortId(), data, '');
   if (!txn.user_name) throw new Error('user_id is required');
-  writeRow(sheet, TXN_HEADERS, sheet.getLastRow() + 1, txn);
+  txn.photos = resolveLegacyPhotos(data.photo, []);
+  txn.photo = txn.photos.length ? txn.photos[0].fileId : '';
+  const stored = Object.assign({}, txn, { photos: JSON.stringify(txn.photos) });
+  writeRow(sheet, TXN_HEADERS, sheet.getLastRow() + 1, stored);
+  SpreadsheetApp.flush();
   txn.date = serialize(txn.date);
   cidRemember(key, txn.id);
   return txn;
@@ -563,9 +576,17 @@ function updateTxn(id, data) {
   const sheet = txnSheet();
   const row = findRow(sheet, 'id', id);
   if (row === -1) throw new Error('Transaction not found: ' + id);
-  const existingPhoto = String(readCell(sheet, row, 'photo') || '');
-  const txn = buildTxn(id, data, existingPhoto);
-  writeRow(sheet, TXN_HEADERS, row, txn);
+  const before = shapePhotos(readRow(sheet, TXN_HEADERS, row));
+  const txn = buildTxn(id, data, before.photo);
+  txn.photos = resolveLegacyPhotos(data.photo, before.photos);
+  txn.photo = txn.photos.length ? txn.photos[0].fileId : '';
+  // Record originals before replacement/removal so Undo can restore from Drive.
+  before.photos.forEach(function (p, i) { rememberPhoto(id, p, i); });
+  writeTxnValues(sheet, row, Object.assign({}, txn, { photos: JSON.stringify(txn.photos) }));
+  if (data.photo !== undefined && before.photos.length) {
+    cancelRelatedUploads(id, before.photos[0].id);
+    trashUnreferenced(before.photos[0].fileId);
+  }
   txn.date = serialize(txn.date);
   return txn;
 }
@@ -577,11 +598,252 @@ function updateTxn(id, data) {
 function deleteTxn(id) {
   const sheet = txnSheet();
   const row = findRow(sheet, 'id', id);
-  if (row === -1) return { deleted: id, already: true };
-  const photo = String(readCell(sheet, row, 'photo') || '');
-  if (photo) trashPhoto(photo);
+  if (row === -1) {
+    uploadsFor(id).forEach(function (u) { trashUnreferenced(u.file_id); });
+    return { deleted: id, already: true };
+  }
+  const files = preparePhotoDeletion(id, shapePhotos(readRow(sheet, TXN_HEADERS, row)).photos);
   sheet.deleteRow(row);
+  SpreadsheetApp.flush();
+  files.forEach(trashUnreferenced);
   return { deleted: id };
+}
+
+// ---------- v9 attachment metadata and persistent upload journal ----------
+
+function photoError(code, message) {
+  const e = new Error(message);
+  e.code = code;
+  throw e;
+}
+
+function shapePhotos(txn) {
+  let photos = txn.photos;
+  if (typeof photos === 'string' && photos) {
+    try { photos = JSON.parse(photos); }
+    catch (e) { photoError('PHOTO_METADATA', 'Photo metadata is invalid; restore the photos cell'); }
+    if (!Array.isArray(photos)) photoError('PHOTO_METADATA', 'Photo metadata must be a list');
+  }
+  if (!Array.isArray(photos)) {
+    photos = txn.photo ? [{ id: String(txn.photo), fileId: String(txn.photo) }] : [];
+  }
+  txn.photos = photos.map(function (p) {
+    if (!p || !p.id || !p.fileId) photoError('PHOTO_METADATA', 'Photo metadata is incomplete');
+    return { id: String(p.id), fileId: String(p.fileId) };
+  });
+  txn.photo = txn.photos.length ? txn.photos[0].fileId : '';
+  return txn;
+}
+
+function writeTxnValues(sheet, row, patch) {
+  const map = headerMap(sheet);
+  const range = sheet.getRange(row, 1, 1, sheet.getLastColumn());
+  const values = range.getValues()[0];
+  Object.keys(patch).forEach(function (k) { if (map[k] !== undefined) values[map[k]] = patch[k]; });
+  range.setValues([values]);
+  SpreadsheetApp.flush();
+}
+
+function setTxnPhotos(id, photos) {
+  const sheet = txnSheet();
+  const row = findRow(sheet, 'id', id);
+  if (row === -1) photoError('ENTRY_MISSING', 'Entry was removed; photo cannot be attached');
+  writeTxnValues(sheet, row, { photos: JSON.stringify(photos), photo: photos.length ? photos[0].fileId : '' });
+}
+
+function getTxnPhotos(id) {
+  const sheet = txnSheet();
+  const row = findRow(sheet, 'id', id);
+  if (row === -1) photoError('ENTRY_MISSING', 'Entry was removed; photo cannot be attached');
+  return shapePhotos(readRow(sheet, TXN_HEADERS, row)).photos;
+}
+
+function uploadSheet() { return ensureSheet('photo_uploads', UPLOAD_HEADERS); }
+function uploadsFor(id) {
+  return listRows(uploadSheet(), UPLOAD_HEADERS).filter(function (u) { return String(u.txn_id) === String(id); });
+}
+function findUpload(id) {
+  const sheet = uploadSheet();
+  const row = findRow(sheet, 'upload_id', id);
+  return row === -1 ? null : Object.assign(readRow(sheet, UPLOAD_HEADERS, row), { _row: row });
+}
+function writeUpload(record) {
+  const sheet = uploadSheet();
+  const row = record._row || sheet.getLastRow() + 1;
+  sheet.getRange(row, 1, 1, UPLOAD_HEADERS.length).setValues([
+    UPLOAD_HEADERS.map(function (h) { return record[h] === undefined ? '' : record[h]; }),
+  ]);
+  SpreadsheetApp.flush(); // file creation must never precede this reservation
+  record._row = row;
+  return record;
+}
+function rememberPhoto(txnId, photo, position) {
+  const found = findUpload(photo.id);
+  if (found) return found;
+  return writeUpload({
+    upload_id: photo.id, txn_id: String(txnId), file_id: photo.fileId,
+    replaces_id: '', replaces_file_id: '', state: 'done', position: position, digest: '', source_txn: '',
+  });
+}
+function validAttachmentId(id) {
+  id = String(id || '');
+  if (!/^[A-Za-z0-9_-]{1,160}$/.test(id)) photoError('PHOTO_ID', 'Invalid attachment id');
+  return id;
+}
+
+function reserveUpload(txnId, attachmentId, replacesId, digest, source) {
+  const photos = getTxnPhotos(txnId);
+  const existing = findUpload(attachmentId);
+  if (existing) {
+    if (String(existing.txn_id) === String(txnId) &&
+        (existing.state === 'cancelled' || existing.state === 'removed')) return existing;
+    if (String(existing.txn_id) !== String(txnId) || String(existing.digest) !== digest ||
+        String(existing.replaces_id) !== replacesId || String(existing.source_txn) !== source) {
+      photoError('PHOTO_CONFLICT', 'This photo id was already used for another operation');
+    }
+    return existing;
+  }
+  photos.forEach(function (p, i) { rememberPhoto(txnId, p, i); });
+  const history = uploadsFor(txnId);
+  const target = photos.find(function (p) { return p.id === replacesId; });
+  if (replacesId && !target) photoError('PHOTO_CONFLICT', 'Photo changed on another device; reopen the entry');
+  const pendingAdds = history.filter(function (u) {
+    return u.state === 'reserved' && !u.replaces_id && !photos.some(function (p) { return p.id === u.upload_id; });
+  }).length;
+  if (!replacesId && photos.length + pendingAdds >= MAX_PHOTOS) photoError('PHOTO_LIMIT', 'An entry can have up to five photos');
+  const targetRecord = target && findUpload(target.id);
+  const position = targetRecord ? Number(targetRecord.position) :
+    Math.max(-1, ...history.map(function (u) { return Number(u.position) || 0; })) + 1;
+  // Reserve the ID before creating a Drive file. Retrying after a lost create
+  // response uses this same ID, including after the CacheService TTL expires.
+  const fileId = source ? '' : Drive.Files.generateIds({ count: 1, space: 'drive', type: 'files' }).ids[0];
+  return writeUpload({
+    upload_id: attachmentId, txn_id: String(txnId), file_id: fileId,
+    replaces_id: replacesId, replaces_file_id: target ? target.fileId : '',
+    state: 'reserved', position: position, digest: digest, source_txn: source,
+  });
+}
+
+function photoResult(record) {
+  return { attachment: { id: String(record.upload_id), fileId: String(record.file_id) },
+    photos: getTxnPhotos(record.txn_id), cancelled: record.state === 'cancelled' || record.state === 'removed' };
+}
+
+function completeUpload(record) {
+  let photos = getTxnPhotos(record.txn_id);
+  if (photos.some(function (p) { return p.id === record.upload_id; })) {
+    record.state = 'done'; writeUpload(record);
+    if (record.replaces_file_id) trashUnreferenced(record.replaces_file_id);
+    return photoResult(record);
+  }
+  if (record.replaces_id) {
+    const at = photos.findIndex(function (p) { return p.id === record.replaces_id; });
+    if (at === -1) photoError('PHOTO_CONFLICT', 'Photo changed on another device; reopen the entry');
+    photos.splice(at, 1, { id: record.upload_id, fileId: record.file_id });
+  } else {
+    if (photos.length >= MAX_PHOTOS) photoError('PHOTO_LIMIT', 'An entry can have up to five photos');
+    const at = photos.findIndex(function (p) {
+      const u = findUpload(p.id);
+      return u && Number(u.position) > Number(record.position);
+    });
+    photos.splice(at === -1 ? photos.length : at, 0, { id: record.upload_id, fileId: record.file_id });
+  }
+  setTxnPhotos(record.txn_id, photos);
+  record.state = 'done'; writeUpload(record);
+  if (record.replaces_file_id) trashUnreferenced(record.replaces_file_id);
+  return photoResult(record);
+}
+
+function uploadTxnPhoto(txnId, attachmentId, b64, replacesId) {
+  attachmentId = validAttachmentId(attachmentId);
+  replacesId = String(replacesId || '');
+  b64 = String(b64 || '');
+  if (!b64 || b64.length > MAX_PHOTO_B64) photoError('PHOTO_SIZE', 'Photo is missing or too large');
+  const record = reserveUpload(txnId, attachmentId, replacesId, sha256Hex_(b64), '');
+  if (record.state !== 'reserved') {
+    // A previous run may have stopped after committing the journal, before
+    // trashing the replaced/cancelled file. Retrying must finish that cleanup.
+    if (record.state === 'done' && record.replaces_file_id) trashUnreferenced(record.replaces_file_id);
+    if (record.state === 'cancelled' || record.state === 'removed') trashUnreferenced(record.file_id);
+    return photoResult(record);
+  }
+  // A retry after the row write succeeded only needs to finish the journal.
+  if (getTxnPhotos(txnId).some(function (p) { return p.id === attachmentId; })) return completeUpload(record);
+  const blob = Utilities.newBlob(Utilities.base64Decode(b64), 'image/jpeg', 'bahi-' + attachmentId + '.jpg');
+  try {
+    Drive.Files.create({ id: record.file_id, name: blob.getName(), parents: [photoFolder()] }, blob);
+  } catch (err) {
+    // Drive returns a conflict for a previously created, pre-generated ID.
+    // Confirm that file exists before considering the upload successful.
+    let file;
+    try { file = Drive.Files.get(record.file_id, { fields: 'id,trashed,parents,mimeType' }); }
+    catch (lookupError) { throw err; }
+    if (file.trashed || !file.parents || file.parents.indexOf(photoFolder()) === -1 ||
+        file.mimeType !== 'image/jpeg') throw err;
+  }
+  return completeUpload(record);
+}
+
+function cancelRelatedUploads(txnId, attachmentId) {
+  const records = uploadsFor(txnId).filter(function (u) {
+    return String(u.upload_id) === String(attachmentId) ||
+      (u.state === 'reserved' && String(u.replaces_id) === String(attachmentId));
+  });
+  records.forEach(function (u) { u.state = 'cancelled'; writeUpload(u); });
+  return records.map(function (u) { return u.file_id; }).filter(Boolean);
+}
+
+function removeTxnPhoto(txnId, attachmentId) {
+  attachmentId = validAttachmentId(attachmentId);
+  const sheet = txnSheet(), row = findRow(sheet, 'id', txnId);
+  const photos = row === -1 ? [] : shapePhotos(readRow(sheet, TXN_HEADERS, row)).photos;
+  photos.forEach(function (p, i) { rememberPhoto(txnId, p, i); });
+  const files = cancelRelatedUploads(txnId, attachmentId);
+  if (!findUpload(attachmentId)) {
+    // Removal may beat the first upload request; the tombstone prevents it
+    // from attaching later when that old queued request finally arrives.
+    writeUpload({ upload_id: attachmentId, txn_id: String(txnId), file_id: '', replaces_id: '',
+      replaces_file_id: '', state: 'cancelled', position: 0, digest: '', source_txn: '' });
+  }
+  if (row !== -1) setTxnPhotos(txnId, photos.filter(function (p) { return p.id !== attachmentId; }));
+  files.forEach(trashUnreferenced);
+  return { removed: attachmentId, photos: row === -1 ? [] : getTxnPhotos(txnId) };
+}
+
+function preparePhotoDeletion(txnId, photos) {
+  photos.forEach(function (p, i) { rememberPhoto(txnId, p, i); });
+  const records = uploadsFor(txnId);
+  records.forEach(function (u) { u.state = u.state === 'done' ? 'removed' : 'cancelled'; writeUpload(u); });
+  return records.map(function (u) { return u.file_id; }).filter(Boolean);
+}
+
+function fileReferenced(fileId, exceptTxn) {
+  return listRows(txnSheet(), TXN_HEADERS).some(function (t) {
+    return String(t.id) !== String(exceptTxn || '') &&
+      shapePhotos(t).photos.some(function (p) { return p.fileId === String(fileId); });
+  });
+}
+function trashUnreferenced(fileId) {
+  if (fileId && !fileReferenced(fileId)) trashPhoto(fileId);
+}
+function cleanupRetiredPhotos() {
+  listRows(uploadSheet(), UPLOAD_HEADERS).filter(function (u) {
+    return u.state === 'removed' || u.state === 'cancelled';
+  }).forEach(function (u) { trashUnreferenced(u.file_id); });
+}
+
+function restoreTxnPhoto(txnId, attachmentId, sourceTxnId, sourceAttachmentId) {
+  attachmentId = validAttachmentId(attachmentId);
+  const source = findUpload(String(sourceAttachmentId));
+  if (!source || String(source.txn_id) !== String(sourceTxnId) || !source.file_id) {
+    photoError('PHOTO_MISSING', 'Original photo cannot be restored');
+  }
+  const record = reserveUpload(txnId, attachmentId, '', '', String(sourceTxnId) + ':' + String(sourceAttachmentId));
+  if (record.state !== 'reserved') return photoResult(record);
+  if (fileReferenced(source.file_id, txnId)) photoError('PHOTO_CONFLICT', 'Photo is attached to another entry');
+  record.file_id = source.file_id; writeUpload(record);
+  Drive.Files.update({ trashed: false }, source.file_id);
+  return completeUpload(record);
 }
 
 // ---------- photos (merchant's own Drive, private) ----------
