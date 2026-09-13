@@ -389,7 +389,10 @@
       <span id="photo-counter" aria-live="polite"></span>
       <button type="button" id="photo-next" class="btn btn-ghost" aria-label="Next photo" hidden>›</button>
     </div>
-    <img id="photo-img" alt="Attached bill photo">
+    <div id="photo-swipe-area">
+      <img id="photo-img" alt="Attached bill photo" draggable="false">
+    </div>
+    <p id="photo-swipe-hint" class="photo-swipe-hint" hidden>Swipe left or right to change photo</p>
     <p id="photo-status" role="status" hidden></p>
     <div class="sheet-actions">
       <button type="button" id="photo-replace" class="btn btn-ghost" hidden>Replace</button>

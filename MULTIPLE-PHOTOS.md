@@ -9,7 +9,10 @@
   right. No centre divider. Photo strips scroll horizontally inside the
   vertically scrolling ledger; every attachment has a thumbnail.
 - Entry text opens the existing App-PIN-protected editor. A ledger thumbnail
-  opens a read-only viewer with previous/next and a counter, without a PIN.
+  opens a read-only viewer with left/right finger swipes, previous/next buttons
+  and a counter, without a PIN. Swipes stop at the first/last photo. Taps,
+  vertical/diagonal strokes, long presses, cancelled and multi-finger gestures
+  do not navigate; browser zoom/panning retains control while zoomed in.
   The editor keeps Add photo beside Date and places its thumbnail strip below.
 - Pending/failed photo badges and Retry belong to the photo, not the amount.
   The financial write is committed before its independent photo jobs.
@@ -89,7 +92,7 @@ the backend release is itself a rollout gate: do not merge until approved.
 Once multiple-photo data exists, keep a compatible **v9 backend during any
 frontend rollback**. Do not roll the backend back to v8.
 
-This change bumps the PWA shell to `bahi-shell-v23`; regenerate backend release
+This change bumps the PWA shell to `bahi-shell-v24`; regenerate backend release
 hashes with `node apps-script/make-release.mjs` after any backend source changes.
 
 ## Verification and acceptance
@@ -108,9 +111,9 @@ mocked Sheets, Drive, locks, properties, fetch and cache services. It does not
 substitute a reimplementation of the API. Browser tests cover both that source
 and the existing v8 mock. These are local checks, **not real Google evidence**.
 
-Verified locally on 13 September 2026: **13 backend tests passed; 112 browser
-regression/feature tests passed**, plus the responsive screenshot check added
-after that full run. Coverage includes zero/one/five photos, mixed camera/gallery,
+Verified locally on 13 September 2026: **13 backend tests passed; 122 browser
+regression/feature tests passed**, including nine large-photo swipe tests and
+responsive screenshot checks. Coverage includes zero/one/five photos, mixed camera/gallery,
 sixth-photo rejection, individual edit/cancel, PIN boundaries, offline reload,
 legacy over-budget payloads, storage quota failures, independent upload retries,
 lost replies, cancellation, deletion/Undo and old/new compatibility. Synthetic
@@ -136,7 +139,7 @@ Physical acceptance — record independently from automated results:
 | Vertical ledger scroll, correct thumbnail/viewer, PIN-free viewing and protected editing | Not yet supplied | Pending |
 | Offline save/reload/reconnect; amount saved even when photo fails | Not yet supplied | Pending |
 | Dedicated v9 ledger: files visible in private Drive, replace/remove/delete/Undo | Not yet supplied | Pending |
-| Installed PWA update to v23 and repeat camera/offline flows | Not yet supplied | Pending |
+| Installed PWA update to v24 and repeat camera/offline flows | Not yet supplied | Pending |
 
 For Google integration, also repeat a completed upload request with the same
 attachment ID and confirm the same Drive file; remove it then repeat the stale
@@ -146,3 +149,19 @@ record exact phone, OS/browser versions and any untested combinations.
 
 Deferred: pending-photo IndexedDB migration, photo reordering, and unrelated
 queue/reliability redesign.
+
+### Large-photo swipe follow-up
+
+`tests/e2e/viewer-swipe.spec.mjs` uses a touch-enabled mobile Chromium context
+and CDP `Input.dispatchTouchEvent` strokes on the visible viewer. It does not
+call the app's navigation function or replace swipes with button clicks.
+Five distinct numbered images verify actual displayed content, not just a
+counter. Tests cover both directions, boundaries/single images, accidental and
+cancelled gestures, browser zoom, native short-screen scrolling, delayed image
+responses, mid-gesture closure and the PIN-protected editor's draft cancellation.
+
+This is frontend-only: no Apps Script update is required for swipe navigation.
+On the temporary HTTPS preview, reload or tap the new-version banner to receive
+v24. A normal GitHub Pages installation still needs the frontend PR released.
+Physical swipe responsiveness, pinch/pan feel, and browser-specific behaviour
+remain separate manual checks in Chrome, Samsung Internet and Safari as available.

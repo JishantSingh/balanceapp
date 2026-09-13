@@ -1980,7 +1980,50 @@ function openPhotoCollection(photos, index, fromForm) {
   openPhotoViewer(fromForm);
   showCollectionPhoto();
 }
+
+// Only a deliberate, single-finger horizontal stroke on the photo navigates.
+// Native vertical scrolling and pinch zoom retain control (pointercancel),
+// and a zoomed page uses normal panning instead of changing attachments.
+let photoSwipe = null;
+const photoIsZoomed = () => (window.visualViewport?.scale || 1) > 1.01;
+function syncPhotoSwipe() {
+  photoSwipe = null;
+  const enabled = $('dlg-photo').open && photoViewer?.photos.length > 1 && !photoIsZoomed();
+  $('photo-swipe-area').classList.toggle('swipe-enabled', !!enabled);
+  $('photo-swipe-hint').hidden = !enabled;
+}
+function navigatePhoto(delta) {
+  if (!photoViewer || !$('dlg-photo').open) return;
+  const next = photoViewer.index + delta;
+  if (next < 0 || next >= photoViewer.photos.length) return;
+  photoViewer.index = next;
+  showCollectionPhoto();
+}
+function startPhotoSwipe(e) {
+  if (e.pointerType !== 'touch' || !e.isPrimary ||
+      !$('photo-swipe-area').classList.contains('swipe-enabled')) return;
+  photoSwipe = { id: e.pointerId, x: e.clientX, y: e.clientY, at: e.timeStamp,
+    viewer: photoViewer, index: photoViewer.index, ledger: ledgerGen,
+    distance: Math.max(32, Math.min(72, $('photo-swipe-area').clientWidth * 0.15)) };
+  $('photo-swipe-area').setPointerCapture(e.pointerId);
+}
+function movePhotoSwipe(e) {
+  const g = photoSwipe;
+  if (!g || g.id !== e.pointerId) return;
+  const x = Math.abs(e.clientX - g.x), y = Math.abs(e.clientY - g.y);
+  if (y > 12 && y > x) photoSwipe = null;
+}
+function endPhotoSwipe(e) {
+  const g = photoSwipe;
+  if (!g || g.id !== e.pointerId) return;
+  photoSwipe = null;
+  if (g.viewer !== photoViewer || g.index !== photoViewer.index ||
+      g.ledger !== ledgerGen || photoIsZoomed() || e.timeStamp - g.at > 1000) return;
+  const dx = e.clientX - g.x, dy = e.clientY - g.y;
+  if (Math.abs(dx) >= g.distance && Math.abs(dx) > Math.abs(dy) * 1.5) navigatePhoto(dx < 0 ? 1 : -1);
+}
 async function showCollectionPhoto() {
+  syncPhotoSwipe();
   const viewer = photoViewer;
   if (!viewer) return;
   const p = viewer.photos[viewer.index];
@@ -2804,8 +2847,27 @@ function init() {
     const tile = e.target.closest('[data-photo-index]');
     if (tile) openPhotoCollection(draftPhotos, Number(tile.dataset.photoIndex), true);
   });
-  $('photo-prev').addEventListener('click', () => { photoViewer.index--; showCollectionPhoto(); });
-  $('photo-next').addEventListener('click', () => { photoViewer.index++; showCollectionPhoto(); });
+  $('photo-prev').addEventListener('click', () => navigatePhoto(-1));
+  $('photo-next').addEventListener('click', () => navigatePhoto(1));
+  $('photo-swipe-area').addEventListener('pointerdown', startPhotoSwipe, { passive: true });
+  $('photo-swipe-area').addEventListener('pointermove', movePhotoSwipe, { passive: true });
+  $('photo-swipe-area').addEventListener('pointerup', endPhotoSwipe, { passive: true });
+  $('photo-swipe-area').addEventListener('lostpointercapture', () => { photoSwipe = null; });
+  // Also cancel when a second finger lands outside the image, e.g. on a control.
+  document.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'touch' && !e.isPrimary) photoSwipe = null;
+  }, { capture: true, passive: true });
+  document.addEventListener('pointercancel', () => { photoSwipe = null; }, { passive: true });
+  window.visualViewport?.addEventListener('resize', syncPhotoSwipe);
+  window.addEventListener('pagehide', () => { photoSwipe = null; });
+  document.addEventListener('visibilitychange', () => { photoSwipe = null; });
+  $('dlg-photo').addEventListener('cancel', () => { photoSwipe = null; });
+  $('dlg-photo').addEventListener('close', () => {
+    if ($('dlg-photo').open) return; // a newer viewer may already be open
+    photoViewer = null;
+    viewerGen++;
+    syncPhotoSwipe();
+  });
   $('photo-retry').addEventListener('click', () => {
     const p = photoViewer.photos[photoViewer.index];
     $('dlg-photo').close(); retryPhotoJobs(p.id);

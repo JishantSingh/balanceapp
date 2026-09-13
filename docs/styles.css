@@ -461,6 +461,9 @@ body {
 .draft-photo-strip { margin-top: 12px; }
 .photo-viewer-nav { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
 .photo-viewer-nav .btn { min-width: 44px; }
+#photo-swipe-area { min-height: 96px; }
+#photo-swipe-area.swipe-enabled { touch-action: pan-y pinch-zoom; }
+.photo-swipe-hint { margin: 8px 0 0; text-align: center; color: var(--text-3); font-size: 0.75rem; }
 #photo-status { color: var(--text-2); font-size: 0.85rem; overflow-wrap: anywhere; }
 .txn-thumb {
   width: 44px; height: 44px; flex: none;
