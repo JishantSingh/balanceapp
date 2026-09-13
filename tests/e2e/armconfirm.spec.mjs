@@ -11,13 +11,13 @@ test('an armed delete must not carry over to a different entry', async ({ page }
   await openCustomer(page, 'Ramu Halwai');
 
   // arm delete on the 'atta' entry, then cancel
-  await page.locator('.txn-row', { hasText: 'atta' }).click();
+  await page.locator('.txn-row', { hasText: 'atta' }).locator('.txn-text').click();
   await page.locator('#txn-delete').click();
   await page.locator('#dlg-txn [data-close]').click();
   await expect(page.locator('#dlg-txn')).toBeHidden();
 
   // open the other entry and tap Delete ONCE — it must only arm, never delete
-  await page.locator('.txn-row', { hasText: '200' }).click();
+  await page.locator('.txn-row', { hasText: '200' }).locator('.txn-text').click();
   await page.locator('#txn-delete').click();
   await page.waitForTimeout(400);
   await expect(page.locator('#dlg-txn')).toBeVisible();          // still open, only armed
@@ -30,7 +30,7 @@ test('an armed delete must not resize the button under the finger', async ({ pag
   const backend = createBackend(seedLedger());
   await openLedger(page, backend);
   await openCustomer(page, 'Ramu Halwai');
-  await page.locator('.txn-row', { hasText: 'atta' }).click();
+  await page.locator('.txn-row', { hasText: 'atta' }).locator('.txn-text').click();
 
   const del = page.locator('#txn-delete');
   await expect(del).toHaveText('Delete');
@@ -56,13 +56,13 @@ test('cancelling an armed delete and reopening the SAME entry still needs two ta
   await openLedger(page, backend);
   await openCustomer(page, 'Ramu Halwai');
 
-  await page.locator('.txn-row', { hasText: 'atta' }).click();
+  await page.locator('.txn-row', { hasText: 'atta' }).locator('.txn-text').click();
   await page.locator('#txn-delete').click();
   await expect(page.locator('#txn-delete')).toHaveText('Pakka?');
   await page.locator('#dlg-txn [data-close]').click();
   await expect(page.locator('#dlg-txn')).toBeHidden();
 
-  await page.locator('.txn-row', { hasText: 'atta' }).click();
+  await page.locator('.txn-row', { hasText: 'atta' }).locator('.txn-text').click();
   await expect(page.locator('#txn-delete')).toHaveText('Delete');   // reopened disarmed
   await page.locator('#txn-delete').click();                        // one tap only arms
   await expect(page.locator('#txn-delete')).toHaveText('Pakka?');

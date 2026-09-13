@@ -27,7 +27,7 @@ test('editing an entry updates the sheet', async ({ page }) => {
   await openLedger(page, backend);
   await openCustomer(page, 'Ramu Halwai');
 
-  await page.locator('.txn-row', { hasText: 'atta' }).click();
+  await page.locator('.txn-row', { hasText: 'atta' }).locator('.txn-text').click();
   await expect(page.locator('#dlg-txn')).toBeVisible();
   await page.locator('#txn-amount').fill('600');
   await page.locator('#txn-save').click();
@@ -55,7 +55,7 @@ test('an all-digit id (a Number out of Sheets) is still tappable and editable', 
   await openCustomer(page, 'Numeric Nandu');
   await expect(page.locator('#bal-amt')).toContainText('500');
 
-  await page.locator('.txn-row', { hasText: 'atta' }).click();
+  await page.locator('.txn-row', { hasText: 'atta' }).locator('.txn-text').click();
   await expect(page.locator('#dlg-txn')).toBeVisible();      // used to never open
   await page.locator('#txn-amount').fill('600');
   await page.locator('#txn-save').click();
@@ -81,7 +81,7 @@ test('the direction toggle is edit-only and flips the type in the sheet', async 
   await page.locator('#dlg-txn [data-close]').click();
   await expect(page.locator('#dlg-txn')).toBeHidden();
 
-  await page.locator('.txn-row', { hasText: 'atta' }).click();
+  await page.locator('.txn-row', { hasText: 'atta' }).locator('.txn-text').click();
   await expect(page.locator('#txn-dir')).toBeVisible();    // edit: the toggle appears
   await page.locator('.dir-btn[data-dir="received"]').click();
   await expect(page.locator('#txn-title')).toHaveText('Received');
@@ -120,7 +120,7 @@ test('double-tap delete removes the entry from the sheet', async ({ page }) => {
   await openLedger(page, backend);
   await openCustomer(page, 'Ramu Halwai');
 
-  await page.locator('.txn-row', { hasText: 'atta' }).click();
+  await page.locator('.txn-row', { hasText: 'atta' }).locator('.txn-text').click();
   const del = page.locator('#txn-delete');
   await del.click();                     // arms
   await expect(del).not.toHaveText('Delete');

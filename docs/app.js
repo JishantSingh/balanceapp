@@ -54,6 +54,17 @@ let updateWaiting = false;                // a new app version is installed and 
 let photoState = { mode: 'none', b64: null, id: null };
 let photoFormGen = 0;     // a decoded image belongs only to the form that selected it
 let photoProcessing = false;
+let draftPhotos = [];
+let originalDraftPhotos = [];
+let replacingPhotoId = null;
+let photoViewer = null;
+let viewerGen = 0;
+const PHOTO_QUEUE_BUDGET = 3 * 1024 * 1024;
+const PHOTO_ACTIONS = new Set(['uploadTxnPhoto', 'removeTxnPhoto', 'restoreTxnPhoto']);
+const isPhotoJob = (item) => PHOTO_ACTIONS.has(item.action);
+const hasFinancialWrites = () => queue.some((item) => !isPhotoJob(item));
+const multiPhotoSupported = () => !!(config && config.demo) || !!(db.capabilities && db.capabilities.multiPhoto);
+const photoLimit = () => multiPhotoSupported() ? 5 : 1;
 const photoCache = {};   // fileId -> dataURI (in-memory)
 const demoPhotos = {};   // demo fileId -> b64 (in-memory, demo mode only)
 
@@ -292,6 +303,8 @@ async function apiWith(cfg, action, payload, opts) {
     throw bad;
   }
 
+  const controller = PHOTO_ACTIONS.has(action) ? new AbortController() : null;
+  const deadline = controller ? setTimeout(() => controller.abort(), 30000) : null;
   busy(true);
   try {
     let res;
@@ -305,6 +318,7 @@ async function apiWith(cfg, action, payload, opts) {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify(Object.assign({ action, key: cfg.key }, payload)),
+        signal: controller?.signal,
       });
     }
     // A reply that is not JSON is not a refusal: it is Google's sign-in page
@@ -319,6 +333,7 @@ async function apiWith(cfg, action, payload, opts) {
     if (!json.ok) {
       const refused = new Error(json.error || 'Request failed');
       refused.rejected = true;   // the backend itself said no — the only rollback reason
+      refused.code = json.code;
       throw refused;
     }
     setOffline(false);
@@ -329,6 +344,7 @@ async function apiWith(cfg, action, payload, opts) {
     else if (!probe && action === 'list' && isAuthError(err)) setAuthBad(true);
     throw err;
   } finally {
+    if (deadline) clearTimeout(deadline);
     busy(false);
   }
 }
@@ -375,6 +391,7 @@ function normalizeData(data) {
      survives the round trip through the cache (JSON drops the key). */
   if (data && 'pin' in data) out.pin = data.pin;
   if (data && 'sheetUrl' in data) out.sheetUrl = data.sheetUrl;
+  if (data && 'capabilities' in data) out.capabilities = data.capabilities;
   return out;
 }
 
@@ -383,18 +400,26 @@ function normalizeData(data) {
 let refreshGen = 0;
 async function refresh(silent) {
   if (connecting) return;                                 // a candidate is being validated
-  if (queue.length) { render(); processQueue(); return; } // local truth wins until synced
+  if (hasFinancialWrites()) { render(); processQueue(); return; }
   const gen = ++refreshGen;
   const ledger = ledgerGen;
   try {
     const data = await api('list');
     // stale answer, another ledger, or a write made while we waited: keep local
-    if (gen !== refreshGen || ledger !== ledgerGen || queue.length) { render(); return; }
+    if (gen !== refreshGen || ledger !== ledgerGen || hasFinancialWrites()) { render(); return; }
     const fresh = normalizeData(data);
     db = {
       users: keepLocalMeta(fresh.users), transactions: fresh.transactions,
-      pin: fresh.pin, sheetUrl: fresh.sheetUrl,
+      pin: fresh.pin, sheetUrl: fresh.sheetUrl, capabilities: fresh.capabilities,
     };
+    const orphaned = queue.filter(j => isPhotoJob(j) && !isTmp(j.payload.id) &&
+      !db.transactions.some(t => String(t.id) === String(j.payload.id)));
+    if (orphaned.length) {
+      try {
+        commitQueue(queue.filter(j => !orphaned.includes(j)));
+        toast('Entry removed on another device; its pending photos were cancelled.');
+      } catch (err) { toast(err.message, true); }
+    }
     saveCache();
     render();
   } catch (err) {
@@ -405,64 +430,60 @@ async function refresh(silent) {
 
 // ---------------------------------------------------------------- offline write queue
 
-function saveQueue() {
-  try {
-    saveJSON(LS_QUEUE, queue);
-  } catch (e) {
-    // Storage full — drop queued photo payloads (entries themselves survive)
-    if (dropQueuedPhotos()) {
-      toast('Storage full — a queued photo was dropped; the entry is safe', true);
-      try { saveJSON(LS_QUEUE, queue); } catch (e2) { /* give up quietly */ }
-      try { saveJSON(LS_FAILED, failed); } catch (e2) { /* give up quietly */ }
-    }
+function writeDurably(key, value) {
+  try { saveJSON(key, value); return true; } catch (e) {
+    // Only rebuildable caches may be evicted. Queue/failed/config are never
+    // removed to make room, and image bytes are never silently discarded.
+    [LS_CACHE, LS_THUMBS].forEach((k) => { try { localStorage.removeItem(k); } catch (ignored) { /* storage unavailable */ } });
+    thumbs = {};
+    try { saveJSON(key, value); return true; } catch (again) { return false; }
   }
+}
+function queuedPhotoBytes(items) {
+  return items.reduce((sum, item) => sum + 2 * String(
+    (item.payload && (item.payload.b64 || (item.payload.data && item.payload.data.photo))) || ''
+  ).length, 0);
+}
+function commitQueue(candidate, checkBudget = false) {
+  const before = queuedPhotoBytes(queue.concat(failed));
+  const after = queuedPhotoBytes(candidate.concat(failed));
+  if (checkBudget && after > PHOTO_QUEUE_BUDGET && after > before) {
+    throw new Error('Photos exceed offline storage budget. Sync pending photos or remove some new photos.');
+  }
+  if (!writeDurably(LS_QUEUE, candidate)) {
+    throw new Error('Phone storage is full. Sync pending work or remove new photos, then try again.');
+  }
+  queue = candidate;
   updateChips();
 }
-
-// Photo bytes (~1.4MB b64 each) are the only thing in local storage big
-// enough to blow the quota — dropping them keeps the entries themselves.
-function dropQueuedPhotos() {
-  let dropped = false;
-  queue.concat(failed).forEach((item) => {
-    if (item.payload && item.payload.data && item.payload.data.photo) {
-      delete item.payload.data.photo;
-      dropped = true;
-    }
-  });
-  return dropped;
+function saveQueue() {
+  if (!writeDurably(LS_QUEUE, queue)) {
+    toast('Queue could not be saved. Keep this app open and free phone storage.', true);
+    return false;
+  }
+  updateChips();
+  return true;
 }
 
 // The cached ledger must never take an entry down with it: on a full phone we
 // free what we can, tell the merchant what was lost, and carry on (audit 0.5).
 function saveCache() {
-  try {
-    saveJSON(LS_CACHE, db);
-  } catch (e) {
-    const dropped = dropQueuedPhotos();
-    if (dropped) {
-      try { saveJSON(LS_QUEUE, queue); } catch (e2) { /* keep going */ }
-      try { saveJSON(LS_FAILED, failed); } catch (e2) { /* keep going */ }
-    }
-    try { saveJSON(LS_CACHE, db); } catch (e3) { /* stale cache — the queue still holds the truth */ }
-    toast(dropped
-      ? 'Phone ki memory bhar gayi — entry save hui, par photo nahi'
-      : 'Phone ki memory bhar gayi — entry save hui, par phone par nahi rakhi ja saki', true);
-  }
+  try { saveJSON(LS_CACHE, db); } catch (e) { /* queue remains authoritative */ }
 }
 
 function saveFailed() {
-  try {
-    saveJSON(LS_FAILED, failed);
-  } catch (e) {
-    if (dropQueuedPhotos()) { try { saveJSON(LS_FAILED, failed); } catch (e2) { /* memory only */ } }
-  }
+  const ok = writeDurably(LS_FAILED, failed);
+  if (!ok) toast('Failed work could not be saved. Free phone storage before closing the app.', true);
   updateChips();
+  return ok;
 }
 
 function updateChips() {
   const pending = $('chip-pending');
   pending.hidden = queue.length === 0;
   pending.textContent = queue.length + ' pending';
+  const photoCount = queue.filter(isPhotoJob).length;
+  if (photoCount) pending.textContent = queue.filter((j) => !isPhotoJob(j)).length + ' entries · ' + photoCount + ' photos pending';
 
   const bad = $('chip-failed');
   bad.hidden = failed.length === 0;
@@ -473,11 +494,18 @@ function updateChips() {
   $('chip-offline').hidden = !offline;
 }
 
+function makeWrite(action, payload, tmpId, undo) {
+  const qid = nextId();
+  if (action === 'addTxn' || action === 'addUser') payload = Object.assign({}, payload, { cid: payload.cid || qid });
+  return { qid, action, payload, tmpId: tmpId || null,
+    undo: undo || (tmpId ? { type: action, tmpId } : null), label: describeWrite(action, payload, undo) };
+}
+
 function enqueue(action, payload, tmpId, undo) {
   // Demo writes go straight to the local demo store — no queue, no chip
   if (config && config.demo) {
     api(action, payload).then(() => refresh(true));
-    return;
+    return true;
   }
   // Everything needed to undo the optimistic local change if the server
   // refuses this write: an add needs only its temporary id, an edit or delete
@@ -494,16 +522,18 @@ function enqueue(action, payload, tmpId, undo) {
   if (action === 'addTxn' || action === 'addUser') {
     payload = Object.assign({}, payload, { cid: (payload && payload.cid) || qid });
   }
-  queue.push({
+  const item = {
     qid,
     action,
     payload,
     tmpId: tmpId || null,
     undo: rollback,
     label: describeWrite(action, payload, rollback),   // named while the entity still exists
-  });
-  saveQueue();
+  };
+  try { commitQueue(queue.concat(item), true); }
+  catch (err) { toast(err.message, true); return false; }
   if (!connecting) processQueue();   // a candidate is being validated — wait
+  return true;
 }
 
 function userName(id) {
@@ -557,20 +587,36 @@ function alreadyGone(action, message) {
 
 let processing = false;
 async function processQueue() {
-  if (processing || connecting || !queue.length || (config && config.demo)) return;
+  if (processing || connecting || !queue.length) return;
   processing = true;
+  const attemptedPhotos = new Set();
   try {
     while (queue.length) {
       if (connecting) return;          // a ledger switch is being validated
-      const item = queue[0];
+      const item = queue.find((j) => !isPhotoJob(j)) || queue.find((j) =>
+        isPhotoJob(j) && j.status !== 'failed' && !attemptedPhotos.has(j.qid) &&
+        !isTmp(j.payload.id) && db.transactions.some((t) => String(t.id) === String(j.payload.id)) &&
+        !failed.some((f) => f.qid && f.qid === j.dependsOn));
+      if (!item) break;
       if (item.inflight) return;       // belt and braces: never send twice
       item.inflight = true;
+      item.attempted = true;
+      if (isPhotoJob(item)) attemptedPhotos.add(item.qid);
       const ledger = ledgerGen;        // the ledger this write belongs to
       let result;
       try {
         result = await apiWith(config, item.action, item.payload);
       } catch (err) {
         item.inflight = false;
+        if (isPhotoJob(item)) {
+          if (ledger !== ledgerGen) return;
+          item.status = 'failed';
+          item.error = err.message || 'Photo upload failed';
+          if (isAuthError(err)) setAuthBad(true);
+          if (!saveQueue()) return;
+          render();
+          continue; // a photo cannot roll back money or block another job
+        }
         // Offline, a backend URL that needs fixing, or a reply that was not
         // JSON at all — keep queued, retry later. ONLY a backend that actually
         // said no gets rolled back.
@@ -595,6 +641,7 @@ async function processQueue() {
         if (ledger !== ledgerGen) { saveQueue(); return; }   // ledger swapped: result is not ours
         rollbackWrite(item);
         failed.push({
+          qid: item.qid,
           action: item.action,
           payload: item.payload,
           tmpId: item.tmpId || null,
@@ -615,6 +662,30 @@ async function processQueue() {
       // The ledger was wiped or switched while this was on the wire: it landed
       // in the sheet it was meant for, but nothing here may be remapped to it.
       if (ledger !== ledgerGen) { saveQueue(); return; }
+      if (isPhotoJob(item)) {
+        const txn = db.transactions.find((t) => String(t.id) === String(item.payload.id));
+        if (txn && result && result.photos) {
+          txn.photos = result.photos;
+          txn.photo = result.photos[0]?.fileId || '';
+          draftPhotos.forEach((p) => {
+            const ready = result.photos.find(x => x.id === p.id);
+            if (ready && !p.isNew) Object.assign(p, ready, { b64: undefined, status: undefined, error: undefined });
+          });
+        }
+        if (item.action === 'uploadTxnPhoto' && result?.attachment?.fileId && !result.cancelled) {
+          const uri = 'data:image/jpeg;base64,' + item.payload.b64;
+          photoCache[result.attachment.fileId] = uri;
+          await idbPhotoPut(result.attachment.fileId, uri);
+        }
+        if (item.action === 'removeTxnPhoto') {
+          queue = queue.filter((j) => !(isPhotoJob(j) && j.payload.id === item.payload.id &&
+            j.payload.attachmentId === item.payload.attachmentId));
+        }
+        saveCache();
+        if (!saveQueue()) return;
+        render();
+        continue;
+      }
       /* The photo this write carried is already on this phone — it is the very
          file we just uploaded. Filing it under the id the sheet gave it means
          the ledger's thumbnail is built locally, instantly, with no network at
@@ -626,12 +697,95 @@ async function processQueue() {
         if (item.action === 'addUser') remapUserId(item.tmpId, result.user_id, result);
         if (item.action === 'addTxn') remapTxnId(item.tmpId, result.id);
       }
-      saveQueue();
+      if (item.action === 'deleteTxn' || item.action === 'deleteUser') {
+        queue = queue.filter((j) => !isPhotoJob(j) ||
+          (item.action === 'deleteTxn' ? String(j.payload.id) !== String(item.payload.id) :
+            String(j.parentUserId) !== String(item.payload.id)));
+      }
+      if (!saveQueue()) return;
     }
     refresh(true); // fully drained — reconcile with the sheet
   } finally {
     processing = false;
   }
+}
+
+function retryPhotoJobs(attachmentId) {
+  const candidate = queue.map((job) => isPhotoJob(job) && !job.inflight &&
+    (!attachmentId || job.payload.attachmentId === attachmentId)
+    ? { ...job, status: 'pending', error: '' } : job);
+  try { commitQueue(candidate); } catch (err) { toast(err.message, true); return; }
+  processQueue();
+}
+
+function canonicalPhotos(txn) {
+  if (Array.isArray(txn?.photos)) return txn.photos.map((p) => ({ id: String(p.id), fileId: String(p.fileId) }));
+  return txn?.photo && txn.photo !== 'pending' ? [{ id: String(txn.photo), fileId: String(txn.photo) }] : [];
+}
+
+function photosFor(txn) {
+  const photos = canonicalPhotos(txn);
+  queue.filter((j) => isPhotoJob(j) && String(j.payload.id) === String(txn.id)).forEach((j) => {
+    const p = j.payload;
+    if (j.action === 'removeTxnPhoto') {
+      const at = photos.findIndex((x) => x.id === p.attachmentId);
+      if (at >= 0) photos.splice(at, 1);
+    } else {
+      const photo = { id: p.attachmentId, fileId: '', b64: p.b64, status: j.status || 'pending',
+        error: j.error || '', replacesId: p.replacesId || '', source: j.action };
+      const at = photos.findIndex((x) => x.id === p.attachmentId || x.id === p.replacesId);
+      if (at >= 0) photos.splice(at, 1, photo); else photos.push(photo);
+    }
+  });
+  return photos;
+}
+
+function makePhotoJob(action, txnId, data, dependency, userId) {
+  return { ...makeWrite(action, { id: txnId, ...data }), status: 'pending',
+    dependsOn: dependency, parentUserId: userId };
+}
+
+function saveTransaction(payload) {
+  const existing = editingTxnId && db.transactions.find((t) => String(t.id) === String(editingTxnId));
+  if (editingTxnId && !existing) throw new Error('Yeh entry ab yahan nahi hai — band karke dobara kholein.');
+  const txnId = existing ? existing.id : tmpTxnId();
+  const candidate = queue.slice();
+  const pendingAdd = existing && queuedAddFor(txnId);
+  let moneyJob;
+  if (pendingAdd) {
+    const at = candidate.indexOf(pendingAdd);
+    moneyJob = { ...pendingAdd, payload: { ...pendingAdd.payload, data: { ...pendingAdd.payload.data, ...payload } } };
+    candidate[at] = moneyJob;
+  } else {
+    moneyJob = makeWrite(existing ? 'updateTxn' : 'addTxn',
+      existing ? { id: txnId, data: payload } : { data: payload },
+      existing ? null : txnId, existing ? { type: 'txn', txn: clone(existing) } : null);
+    candidate.push(moneyJob);
+  }
+  if (multiPhotoSupported()) {
+    originalDraftPhotos.forEach((old) => {
+      const kept = draftPhotos.some((p) => p.id === old.id || p.replacesId === old.id);
+      if (kept) return;
+      const jobIndex = candidate.findIndex((j) => isPhotoJob(j) && j.payload.id === txnId && j.payload.attachmentId === old.id);
+      const job = candidate[jobIndex];
+      if (job && !job.attempted && !job.inflight) candidate.splice(jobIndex, 1);
+      else candidate.push(makePhotoJob('removeTxnPhoto', txnId, { attachmentId: old.id }, moneyJob.qid, payload.user_id));
+      if (old.replacesId) candidate.push(makePhotoJob('removeTxnPhoto', txnId,
+        { attachmentId: old.replacesId }, moneyJob.qid, payload.user_id));
+    });
+    draftPhotos.filter((p) => p.isNew).forEach((p) => candidate.push(makePhotoJob(
+      'uploadTxnPhoto', txnId, { attachmentId: p.id, b64: p.b64, replacesId: p.replacesId || '' },
+      moneyJob.qid, payload.user_id)));
+  }
+  commitQueue(candidate, true); // must succeed before the optimistic entry is changed
+  const local = { ...(existing || {}), id: txnId, user_name: payload.user_id, ...payload };
+  if (!multiPhotoSupported()) local.photo = payload.photo ? 'pending' : payload.photo === '' ? '' : (existing?.photo || '');
+  else { local.photos = canonicalPhotos(existing); local.photo = local.photos[0]?.fileId || ''; }
+  if (existing) Object.assign(existing, local); else db.transactions.push(local);
+  saveCache();
+  render();
+  saveReadback(payload);
+  processQueue();
 }
 
 /* Seed both photo caches from a write that just synced: the bytes went up in
@@ -717,12 +871,14 @@ function reapplyWrite(f) {
   const d = (f.payload && f.payload.data) || {};
   const id = f.payload && f.payload.id;
   if (f.action === 'addTxn') {
-    db.transactions.push({
+    const pending = {
       id: f.tmpId, user_name: d.user_id, date: d.date, type: d.type,
       amount: d.amount, comment: d.comment || '', photo: d.photo ? 'pending' : '',
-    });
+    };
+    const existing = db.transactions.find(t => String(t.id) === String(f.tmpId));
+    if (existing) Object.assign(existing, pending); else db.transactions.push(pending);
   } else if (f.action === 'addUser') {
-    db.users.push({
+    if (!db.users.some(u => String(u.user_id) === String(f.tmpId))) db.users.push({
       user_id: f.tmpId, name: d.name, phone: d.phone || '',
       created_at: todayISO(), token: '', _created: Date.now(),
     });
@@ -756,8 +912,10 @@ function retryFailed(i) {
   failed.splice(i, 1);
   reapplyWrite(f);
   saveCache();
+  const retryId = nextId();
+  queue.forEach(j => { if (j.dependsOn && j.dependsOn === f.qid) j.dependsOn = retryId; });
   queue.push({
-    qid: nextId(),
+    qid: retryId,
     action: f.action, payload: f.payload, tmpId: f.tmpId || null,
     undo: f.undo || null, label: f.label,
   });
@@ -773,6 +931,9 @@ function discardFailed(i) {
   const f = failed[i];
   if (!f) return;
   failed.splice(i, 1);
+  queue = queue.filter(j => !(isPhotoJob(j) && ((f.qid && j.dependsOn === f.qid) ||
+    (f.tmpId && j.payload.id === f.tmpId))));
+  saveQueue();
   saveFailed();
   render();
   renderFailed();
@@ -800,7 +961,7 @@ function isTmp(id) { return /^tmp/.test(String(id)); }
    request that has left the phone. */
 function queuedAddFor(tmpId) {
   const item = queue.find((x) => x.tmpId === tmpId);
-  return item && !item.inflight ? item : null;
+  return item && !item.inflight && !item.attempted ? item : null;
 }
 
 // ---------------------------------------------------------------- demo backend
@@ -830,59 +991,85 @@ function demoSeed() {
 }
 
 function demoApi(action, payload) {
-  let demo = loadJSON(LS_DEMO) || demoSeed();
+  const demo = loadJSON(LS_DEMO) || demoSeed();
+  demo._photoUploads ||= {};
+  demo._removedPhotos ||= {};
   const id = () => Math.random().toString(16).slice(2, 10);
-
-  function storePhoto(data, existing) {
-    if (data.photo === undefined) return existing || '';
-    if (data.photo === '') return '';
-    const pid = 'dph' + id();
-    demoPhotos[pid] = data.photo;
-    return pid;
-  }
-
+  let result;
+  const txn = () => demo.transactions.find((t) => String(t.id) === String(payload.id));
+  const setPhotos = (t, photos) => { t.photos = photos; t.photo = photos[0]?.fileId || ''; };
+  const saveLegacyPhoto = (data, old) => {
+    if (data.photo === undefined) return old;
+    if (!data.photo) return old.slice(1);
+    const fileId = 'dph' + id(); demoPhotos[fileId] = data.photo;
+    return [{ id: fileId, fileId }].concat(old.slice(1));
+  };
   switch (action) {
-    case 'list':
-      break;
-    case 'photo':
-      return Promise.resolve({ b64: demoPhotos[payload.id] || '', mime: 'image/jpeg' });
-    case 'addUser':
-      demo.users.push({
-        user_id: id(), name: payload.data.name, created_at: todayISO(),
-        phone: payload.data.phone || '', token: '', _created: Date.now(),
-      });
-      break;
+    case 'list': break;
+    case 'photo': return Promise.resolve({ b64: demoPhotos[payload.id] || '', mime: 'image/jpeg' });
+    case 'addUser': {
+      result = { user_id: id(), name: payload.data.name, created_at: todayISO(),
+        phone: payload.data.phone || '', token: '', _created: Date.now() };
+      demo.users.push(result); break;
+    }
     case 'updateUser': {
-      const u = demo.users.find((x) => x.user_id === payload.id);
+      const u = demo.users.find(x => x.user_id === payload.id);
       if (u) Object.assign(u, payload.data);
       break;
     }
     case 'deleteUser':
-      demo.users = demo.users.filter((x) => x.user_id !== payload.id);
-      demo.transactions = demo.transactions.filter((x) => x.user_name !== payload.id);
+      demo.users = demo.users.filter(u => u.user_id !== payload.id);
+      demo.transactions = demo.transactions.filter(t => t.user_name !== payload.id);
       break;
-    case 'addTxn':
-      demo.transactions.push({
-        id: id(), user_name: payload.data.user_id, date: payload.data.date,
-        type: payload.data.type, amount: Number(payload.data.amount), comment: payload.data.comment || '',
-        photo: storePhoto(payload.data, ''),
-      });
-      break;
+    case 'addTxn': {
+      result = { id: id(), user_name: payload.data.user_id, ...payload.data };
+      setPhotos(result, saveLegacyPhoto(payload.data, []));
+      demo.transactions.push(result); break;
+    }
     case 'updateTxn': {
-      const t = demo.transactions.find((x) => x.id === payload.id);
-      if (t) Object.assign(t, {
-        date: payload.data.date, type: payload.data.type,
-        amount: Number(payload.data.amount), comment: payload.data.comment || '',
-        photo: storePhoto(payload.data, t.photo),
-      });
+      const t = txn();
+      if (t) {
+        const photos = saveLegacyPhoto(payload.data, canonicalPhotos(t));
+        Object.assign(t, payload.data); setPhotos(t, photos); result = t;
+      }
       break;
     }
-    case 'deleteTxn':
-      demo.transactions = demo.transactions.filter((x) => x.id !== payload.id);
+    case 'deleteTxn': {
+      const t = txn();
+      if (t) demo._removedPhotos[t.id] = canonicalPhotos(t);
+      demo.transactions = demo.transactions.filter(t => t.id !== payload.id);
       break;
+    }
+    case 'uploadTxnPhoto':
+    case 'restoreTxnPhoto': {
+      const t = txn();
+      if (!t) throw new Error('Entry was removed');
+      const existing = canonicalPhotos(t);
+      let fileId = demo._photoUploads[payload.attachmentId];
+      if (!fileId) {
+        if (action === 'restoreTxnPhoto') {
+          fileId = demo._removedPhotos[payload.sourceTxnId]?.find(p => p.id === payload.sourceAttachmentId)?.fileId;
+          if (!fileId) throw new Error('Original photo is missing');
+        } else {
+          fileId = 'dph' + id(); demoPhotos[fileId] = payload.b64;
+        }
+        const at = payload.replacesId ? existing.findIndex(p => p.id === payload.replacesId) : -1;
+        if (payload.replacesId && at < 0) throw new Error('Photo changed');
+        if (at < 0 && existing.length >= 5) throw new Error('An entry can have up to five photos');
+        existing.splice(at < 0 ? existing.length : at, at < 0 ? 0 : 1, { id: payload.attachmentId, fileId });
+        setPhotos(t, existing); demo._photoUploads[payload.attachmentId] = fileId;
+      }
+      result = { attachment: { id: payload.attachmentId, fileId }, photos: canonicalPhotos(t) }; break;
+    }
+    case 'removeTxnPhoto': {
+      const t = txn();
+      if (t) setPhotos(t, canonicalPhotos(t).filter(p => p.id !== payload.attachmentId));
+      result = { photos: t ? canonicalPhotos(t) : [] }; break;
+    }
   }
   saveJSON(LS_DEMO, demo);
-  return Promise.resolve({ users: demo.users, transactions: demo.transactions });
+  return Promise.resolve(result || { users: demo.users, transactions: demo.transactions,
+    v: 9, capabilities: { multiPhoto: true, maxPhotos: 5 } });
 }
 
 // ---------------------------------------------------------------- derived data
@@ -1039,8 +1226,8 @@ function renderCustomer() {
     lastMonth = monthKey;
     const side = t.type === 'received' ? 'got' : 'gave';
     return `${divider}<li class="txn-row" data-id="${escapeHtml(t.id)}" style="animation-delay:${Math.min(i * 30, 300)}ms">
-      <div class="txn-cell ${side === 'gave' ? 'gave' : ''}">${side === 'gave' ? txnCell(t) : ''}</div>
-      <div class="txn-cell ${side === 'got' ? 'got' : ''}">${side === 'got' ? txnCell(t) : ''}</div>
+      <div class="txn-cell ${side === 'gave' ? 'gave' : ''}">${side === 'gave' ? txnCell(t) : txnPhotoCell(t)}</div>
+      <div class="txn-cell ${side === 'got' ? 'got' : ''}">${side === 'got' ? txnCell(t) : txnPhotoCell(t)}</div>
     </li>`;
   }).join('');
 
@@ -1048,42 +1235,73 @@ function renderCustomer() {
   loadLedgerThumbs();
 }
 
-function txnCell(t) {
-  const hasPhoto = t.photo && t.photo !== 'pending';
-  const thumb = hasPhoto
-    ? (thumbs[t.photo]
-        ? `<img class="txn-thumb" data-pid="${escapeHtml(t.photo)}" src="${thumbs[t.photo].d}" alt="photo">`
-        : `<span class="txn-thumb txn-thumb-ph" data-pid="${escapeHtml(t.photo)}">📎</span>`)
-    : '';
-  return `<div class="txn-body"><div class="txn-text">` +
-    `<div class="txn-amt">${money(t.amount)}</div>` +
-    (t.comment ? `<div class="txn-note">${escapeHtml(t.comment)}</div>` : '') +
-    `<div class="txn-date">${fmtDate(t.date)}${t.photo === 'pending' ? ' 📎' : ''}</div>` +
-    `</div>${thumb}</div>`;
+function photoTile(photo, index, txnId, fromForm) {
+  const uri = photo.b64 ? 'data:image/jpeg;base64,' + photo.b64 :
+    (thumbs[photo.fileId]?.d || photoCache[photo.fileId] || '');
+  const attrs = ' data-pid="' + escapeHtml(photo.fileId || '') + '"';
+  const visual = uri ? '<img class="txn-thumb" src="' + uri + '" alt="Photo ' + (index + 1) + '"' + attrs + '>' :
+    '<span class="txn-thumb txn-thumb-ph"' + attrs + '>📎</span>';
+  return '<div class="photo-tile"><button type="button" data-photo-index="' + index + '"' +
+    (fromForm ? ' data-from-form="1"' : ' data-txn-id="' + escapeHtml(txnId) + '"') +
+    ' aria-label="View photo ' + (index + 1) + '">' + visual + '</button>' +
+    (photo.status ? '<small class="' + (photo.status === 'failed' ? 'photo-error' : '') + '">' +
+      (photo.status === 'failed' ? 'Not uploaded' : 'Pending') + '</small>' : '') +
+    (photo.status === 'failed' ? '<button type="button" class="photo-retry" data-retry-photo="' +
+      escapeHtml(photo.id) + '">Retry</button>' : '') + '</div>';
 }
 
-// fetch full photos one at a time, shrink to 96px squares, cache locally
-async function loadLedgerThumbs() {
-  if (connecting) return;   // a candidate is being validated — no calls until it lands
-  const ids = [...new Set(
-    [...document.querySelectorAll('#txn-list .txn-thumb-ph')].map((el) => el.dataset.pid)
-  )].filter((id) => id && !thumbs[id] && !thumbLoading.has(id));
-  for (const id of ids) {
+function txnCell(t) {
+  return '<button type="button" class="txn-text"><span class="txn-amt">' + money(t.amount) + '</span>' +
+    (t.comment ? '<span class="txn-note">' + escapeHtml(t.comment) + '</span>' : '') +
+    '<span class="txn-date">' + fmtDate(t.date) + (t.photo === 'pending' ? ' 📎' : '') + '</span></button>';
+}
+function txnPhotoCell(t) {
+  const photos = photosFor(t);
+  return photos.length ? '<div class="photo-strip" aria-label="Entry photos">' +
+    photos.map((p, i) => photoTile(p, i, t.id, false)).join('') + '</div>' : '';
+}
+
+let photoObserver = null;
+const thumbTasks = [];
+let thumbWorkers = 0;
+function loadLedgerThumbs() {
+  if (photoObserver) photoObserver.disconnect();
+  if (connecting) return;
+  const placeholders = [...document.querySelectorAll('#txn-list .txn-thumb-ph, #txn-photo-list .txn-thumb-ph')];
+  const schedule = (el) => {
+    const id = el.dataset.pid;
+    if (!id || thumbs[id] || thumbLoading.has(id)) return;
     thumbLoading.add(id);
-    try {
-      await fetchFullPhoto(id);
-      thumbs[id] = { d: await makeThumb(photoCache[id]), t: Date.now() };
-      saveThumbs();
-      document.querySelectorAll(`#txn-list .txn-thumb-ph[data-pid="${CSS.escape(id)}"]`).forEach((el) => {
-        const img = document.createElement('img');
-        img.className = 'txn-thumb';
-        img.dataset.pid = id;
-        img.src = thumbs[id].d;
-        img.alt = 'photo';
-        el.replaceWith(img);
-      });
-    } catch (e) { /* keep the 📎 placeholder */ }
-    finally { thumbLoading.delete(id); }
+    thumbTasks.push({ id, ledger: ledgerGen });
+    drainThumbs();
+  };
+  if (!window.IntersectionObserver) { placeholders.forEach(schedule); return; }
+  photoObserver = new IntersectionObserver((entries) => {
+    entries.filter(e => e.isIntersecting).forEach(e => { photoObserver.unobserve(e.target); schedule(e.target); });
+  });
+  placeholders.forEach(el => photoObserver.observe(el));
+}
+async function drainThumbs() {
+  while (thumbWorkers < 2 && thumbTasks.length) {
+    const task = thumbTasks.shift();
+    thumbWorkers++;
+    (async () => {
+      const { id, ledger } = task;
+      try {
+        if (ledger !== ledgerGen) return;
+        await fetchFullPhoto(id);
+        if (ledger !== ledgerGen) return;
+        thumbs[id] = { d: await makeThumb(photoCache[id]), t: Date.now() };
+        saveThumbs();
+        document.querySelectorAll('.txn-thumb-ph[data-pid="' + CSS.escape(id) + '"]').forEach((el) => {
+          const img = document.createElement('img');
+          img.className = 'txn-thumb'; img.dataset.pid = id;
+          img.src = thumbs[id].d; img.alt = 'photo';
+          el.replaceWith(img);
+        });
+      } catch (e) { /* keep a retryable placeholder */ }
+      finally { thumbLoading.delete(task.id); thumbWorkers--; drainThumbs(); }
+    })();
   }
 }
 
@@ -1238,11 +1456,11 @@ async function connectTo(invite) {
   saveJSON(LS_CONFIG, config);
   // Same rule as refresh(): unsynced writes are the truth until they drain,
   // so a key refresh must not blank the entries that are still waiting.
-  if (!queue.length) {
+  if (!hasFinancialWrites()) {
     const fresh = normalizeData(data);
     db = {
       users: keepLocalMeta(fresh.users), transactions: fresh.transactions,
-      pin: fresh.pin, sheetUrl: fresh.sheetUrl,
+      pin: fresh.pin, sheetUrl: fresh.sheetUrl, capabilities: fresh.capabilities,
     };
     saveCache();
   }
@@ -1261,6 +1479,7 @@ function connectNote(msg, isErr) {
 // Normal start-up: cached copy first, then a background sync.
 function bootLedger(opts) {
   if (!config) { show('connect'); return; }
+  queue.filter(j => !isPhotoJob(j)).forEach(reapplyWrite);
   show('home');
   render();
   if (!opts || opts.sync !== false) refresh(true);
@@ -1453,6 +1672,7 @@ function reminderLink(u, bal) {
 function resetPhotoControls() {
   photoFormGen++;
   photoProcessing = false;
+  replacingPhotoId = null;
   $('txn-photo').value = '';
   closeCamera();
   if ($('dlg-photo-source').open) $('dlg-photo-source').close();
@@ -1469,13 +1689,19 @@ function chooseGalleryPhoto() {
 }
 
 async function handleTxnPhoto(e) {
-  const file = e.target.files && e.target.files[0];
+  const files = [...(e.target.files || [])];
   e.target.value = '';     // choosing the same file again must still fire change
-  return processTxnPhoto(file);
+  return processTxnPhoto(files);
 }
 
 async function processTxnPhoto(file) {
-  if (!file || photoProcessing || !$('dlg-txn').open) return;
+  const files = Array.isArray(file) ? file : file ? [file] : [];
+  if (!files.length || photoProcessing || !$('dlg-txn').open) return;
+  if ((replacingPhotoId && files.length > 1) ||
+      (multiPhotoSupported() && !replacingPhotoId && draftPhotos.length + files.length > photoLimit())) {
+    toast('An entry can have up to ' + photoLimit() + ' photos. Choose fewer files.', true);
+    return;
+  }
   const form = photoFormGen;
   const ledger = ledgerGen;
   const customer = currentCustomerId;
@@ -1485,14 +1711,25 @@ async function processTxnPhoto(file) {
   setPhotoUI();
   busy(true);
   try {
-    const b64 = await compressImage(file);
-    if (stillCurrent()) photoState = { mode: 'new', b64, id: photoState.id };
+    const images = [];
+    for (const selected of files) images.push(await compressImage(selected));
+    if (stillCurrent()) {
+      if (!multiPhotoSupported()) photoState = { mode: 'new', b64: images[0], id: photoState.id };
+      else if (replacingPhotoId) {
+        const at = draftPhotos.findIndex((p) => p.id === replacingPhotoId);
+        if (at < 0) throw new Error('Photo changed; reopen the entry');
+        const old = draftPhotos[at];
+        draftPhotos[at] = old.isNew ? { ...old, b64: images[0] } :
+          { id: crypto.randomUUID(), fileId: '', b64: images[0], isNew: true, replacesId: old.id };
+      } else images.forEach((b64) => draftPhotos.push({ id: crypto.randomUUID(), fileId: '', b64, isNew: true }));
+    }
   } catch (err) {
     if (stillCurrent()) toast(err.message, true);
   } finally {
     busy(false);
     if (form === photoFormGen) {
       photoProcessing = false;
+      replacingPhotoId = null;
       setPhotoUI();
     }
   }
@@ -1712,18 +1949,63 @@ function setPhotoUI() {
   ['txn-photo-add', 'txn-photo-view', 'txn-save', 'txn-delete'].forEach((id) => {
     $(id).disabled = photoProcessing;
   });
+  const multi = multiPhotoSupported();
+  $('txn-photo').multiple = multi && !replacingPhotoId;
+  $('txn-photo-list').hidden = !multi || !draftPhotos.length;
+  $('txn-photo-limit').hidden = multi || !!config?.demo;
+  $('txn-photo-limit').textContent = 'One photo per entry. Update the backend to add up to five.';
+  if (multi) {
+    label.textContent = photoProcessing ? 'Photo ban rahi hai…' : 'Add photo';
+    prev.hidden = true; emoji.hidden = false; view.hidden = true;
+    $('txn-photo-add').disabled = photoProcessing || (draftPhotos.length >= photoLimit() && !replacingPhotoId);
+    $('txn-photo-list').innerHTML = draftPhotos.map((p, i) => photoTile(p, i, '', true)).join('');
+    loadLedgerThumbs();
+  } else $('txn-photo-list').innerHTML = '';
 }
 
 // Removing a bill photo now lives in the viewer, behind a confirm — you have to
 // be looking at the photo to throw it away (audit 1.2). Only the form flow may
 // remove; a tap from the read-only ledger just looks.
 async function viewCurrentPhoto() {
+  if (multiPhotoSupported()) { if (draftPhotos.length) openPhotoCollection(draftPhotos, 0, true); return; }
   if (photoState.mode === 'new') {
-    const img = $('photo-img');
-    img.src = 'data:image/jpeg;base64,' + photoState.b64;
-    openPhotoViewer(true);
+    openPhotoCollection([{ id: 'draft', b64: photoState.b64 }], 0, true);
   } else if (photoState.mode === 'existing') {
-    viewPhotoById(photoState.id, true);
+    openPhotoCollection([{ id: photoState.id, fileId: photoState.id }], 0, true);
+  }
+}
+
+function openPhotoCollection(photos, index, fromForm) {
+  photoViewer = { photos, index, fromForm };
+  openPhotoViewer(fromForm);
+  showCollectionPhoto();
+}
+async function showCollectionPhoto() {
+  const viewer = photoViewer;
+  if (!viewer) return;
+  const p = viewer.photos[viewer.index];
+  if (!p) { $('dlg-photo').close(); return; }
+  const generation = ++viewerGen;
+  $('photo-counter').textContent = (viewer.index + 1) + ' / ' + viewer.photos.length;
+  $('photo-prev').hidden = $('photo-next').hidden = viewer.photos.length < 2;
+  $('photo-prev').disabled = viewer.index === 0;
+  $('photo-next').disabled = viewer.index === viewer.photos.length - 1;
+  $('photo-replace').hidden = !viewer.fromForm;
+  $('photo-replace').disabled = !!p.status && !p.isNew;
+  $('photo-remove').hidden = !viewer.fromForm;
+  $('photo-retry').hidden = p.status !== 'failed';
+  $('photo-status').hidden = !p.status;
+  $('photo-status').textContent = p.status === 'failed' ? (p.error || 'Photo not uploaded. Retry when ready.') : 'Photo upload pending';
+  const img = $('photo-img');
+  img.src = p.b64 ? 'data:image/jpeg;base64,' + p.b64 : photoCache[p.fileId] || thumbs[p.fileId]?.d || '';
+  img.classList.toggle('photo-loading', !!p.fileId && !photoCache[p.fileId]);
+  if (!p.fileId) return;
+  try {
+    await fetchFullPhoto(p.fileId);
+    if (generation !== viewerGen || !$('dlg-photo').open) return;
+    img.src = photoCache[p.fileId]; img.classList.remove('photo-loading');
+  } catch (err) {
+    if (generation === viewerGen) { $('photo-status').hidden = false; $('photo-status').textContent = err.message; }
   }
 }
 
@@ -1753,12 +2035,15 @@ async function viewPhotoById(id, fromForm) {
 // One path for full photos: memory → device store → network (persisting on
 // the way through, so a photo fetched for ANY reason is durable on-device).
 async function fetchFullPhoto(id) {
+  const ledger = ledgerGen;
   if (photoCache[id]) return photoCache[id];
   const stored = await idbPhotoGet(id);
+  if (ledger !== ledgerGen) throw new Error('Ledger changed');
   if (stored) { photoCache[id] = stored; return stored; }
   busy(true);
   try {
     const data = await api('photo', { id });
+    if (ledger !== ledgerGen) throw new Error('Ledger changed');
     if (!data.b64) throw new Error('Photo not found');
     photoCache[id] = `data:${data.mime || 'image/jpeg'};base64,` + data.b64;
     await idbPhotoPut(id, photoCache[id]);
@@ -1848,8 +2133,8 @@ function saveReadback(payload) {
      drop that queue item and put the row back — no server call at all;
    - the queue already drained, or we are in demo mode where writes go through
      immediately: the sheet row is gone, so re-create it as a fresh addTxn.
-   A re-created entry cannot carry its photo back (the bytes only ever lived in
-   the queued payload), so it returns without one. */
+   v9 restores attachments through the backend's Drive journal. Older backends
+   can only re-upload the single photo when its bytes are still cached. */
 function restoreTxn(pre) {
   if (!pre) return;
   if (!db.transactions.some((t) => String(t.id) === String(pre.id))) db.transactions.push(clone(pre));
@@ -1858,13 +2143,26 @@ function restoreTxn(pre) {
   toast('Entry wapas aa gayi');
 }
 
-async function readdTxn(pre) {
+async function readdTxn(pre, snapshot) {
   if (!pre) return;
   const tmpId = tmpTxnId();
   const data = {
     user_id: pre.user_name, date: isoOf(pre.date), type: pre.type,
     amount: pre.amount, comment: pre.comment || '',
   };
+  if (multiPhotoSupported()) {
+    const moneyJob = makeWrite('addTxn', { data }, tmpId);
+    const jobs = (snapshot || canonicalPhotos(pre)).map((p) => makePhotoJob(
+      p.fileId ? 'restoreTxnPhoto' : 'uploadTxnPhoto', tmpId,
+      p.fileId ? { attachmentId: crypto.randomUUID(), sourceTxnId: pre.id, sourceAttachmentId: p.id } :
+        { attachmentId: crypto.randomUUID(), b64: p.b64 },
+      moneyJob.qid, pre.user_name));
+    try { commitQueue(queue.concat(moneyJob, ...jobs), true); }
+    catch (err) { toast(err.message, true); return; }
+    db.transactions.push({ ...clone(pre), id: tmpId, photo: '', photos: [] });
+    saveCache(); render(); toast('Entry restored — photos syncing');
+    processQueue(); return;
+  }
   // The server trashed the Drive file with the delete — but the ledger's
   // thumbnail loader put the full photo in the on-device store, so undo can
   // re-upload it as a fresh file. Only a never-viewed or LRU-evicted photo
@@ -1882,6 +2180,30 @@ async function readdTxn(pre) {
   enqueue('addTxn', { data }, tmpId);
   render();
   toast(pre.photo && !photoB64 ? 'Entry wapas aa gayi — photo nahi aa payi' : 'Entry wapas aa gayi');
+}
+
+function deleteMultiEntry() {
+  const id = editingTxnId;
+  const pre = clone(db.transactions.find(t => String(t.id) === String(id)));
+  if (!pre) { toast('Yeh entry ab yahan nahi hai', true); return; }
+  const snapshot = photosFor(pre).map(p => ({ ...p }));
+  const ledger = ledgerGen;
+  const add = queuedAddFor(id);
+  const dropped = add ? queue.filter(j => j === add || (isPhotoJob(j) && j.payload.id === id)) : [];
+  const del = add ? null : makeWrite('deleteTxn', { id }, null, { type: 'txn', txn: pre });
+  try { commitQueue(add ? queue.filter(j => !dropped.includes(j)) : queue.concat(del)); }
+  catch (err) { toast(err.message, true); return; }
+  db.transactions = db.transactions.filter(t => String(t.id) !== String(id));
+  $('dlg-txn').close(); saveCache(); render();
+  showToast('Entry hata di ·', { action: 'WAPAS LAYEIN', ms: 7000, onAction: () => {
+    if (ledger !== ledgerGen) return;
+    if (add || (queue.includes(del) && !del.attempted)) {
+      try { commitQueue(add ? queue.concat(dropped) : queue.filter(j => j !== del)); }
+      catch (err) { toast(err.message, true); return; }
+      restoreTxn(pre); processQueue();
+    } else readdTxn(pre, snapshot);
+  } });
+  processQueue();
 }
 
 // ---------------------------------------------------------------- double-tap confirm
@@ -2251,7 +2573,7 @@ function init() {
   // home
   $('search').addEventListener('input', renderHome);
   $('btn-refresh').addEventListener('click', () => refresh());
-  $('chip-pending').addEventListener('click', () => { toast('Retrying sync…'); processQueue(); });
+  $('chip-pending').addEventListener('click', () => { toast('Retrying sync…'); retryPhotoJobs(); });
   $('chip-failed').addEventListener('click', () => {
     renderFailed();
     showSheet($('dlg-failed'));
@@ -2444,17 +2766,21 @@ function init() {
   $('btn-gave').addEventListener('click', () => openTxnForm('given', null));
   $('btn-got').addEventListener('click', () => openTxnForm('received', null));
   $('txn-list').addEventListener('click', (e) => {
-    const th = e.target.closest('.txn-thumb');
-    if (th && th.dataset.pid) { viewPhotoById(th.dataset.pid, false); return; }
+    const retry = e.target.closest('[data-retry-photo]');
+    if (retry) { retryPhotoJobs(retry.dataset.retryPhoto); return; }
     const row = e.target.closest('.txn-row');
     if (!row) return;
     const t = db.transactions.find((x) => String(x.id) === String(row.dataset.id));
-    if (t) openExistingTxn(t);
+    const photo = e.target.closest('[data-photo-index]');
+    if (t && photo) { openPhotoCollection(photosFor(t), Number(photo.dataset.photoIndex), false); return; }
+    if (t && e.target.closest('.txn-text')) openExistingTxn(t);
   });
 
   // txn photo controls
   $('txn-photo-add').addEventListener('click', () => {
-    $('photo-source-title').textContent = photoState.mode === 'new' || photoState.mode === 'existing'
+    replacingPhotoId = null;
+    $('txn-photo').multiple = multiPhotoSupported();
+    $('photo-source-title').textContent = !multiPhotoSupported() && (photoState.mode === 'new' || photoState.mode === 'existing')
       ? 'Change photo' : 'Add photo';
     showSheet($('dlg-photo-source'));
   });
@@ -2472,10 +2798,30 @@ function init() {
     if (!$('dlg-camera').open) clearCameraSession();
   });
   $('txn-photo-view').addEventListener('click', viewCurrentPhoto);
+  $('txn-photo-list').addEventListener('click', (e) => {
+    const retry = e.target.closest('[data-retry-photo]');
+    if (retry) { retryPhotoJobs(retry.dataset.retryPhoto); return; }
+    const tile = e.target.closest('[data-photo-index]');
+    if (tile) openPhotoCollection(draftPhotos, Number(tile.dataset.photoIndex), true);
+  });
+  $('photo-prev').addEventListener('click', () => { photoViewer.index--; showCollectionPhoto(); });
+  $('photo-next').addEventListener('click', () => { photoViewer.index++; showCollectionPhoto(); });
+  $('photo-retry').addEventListener('click', () => {
+    const p = photoViewer.photos[photoViewer.index];
+    $('dlg-photo').close(); retryPhotoJobs(p.id);
+  });
+  $('photo-replace').addEventListener('click', () => {
+    replacingPhotoId = multiPhotoSupported() ? photoViewer.photos[photoViewer.index].id : null;
+    $('txn-photo').multiple = false;
+    $('dlg-photo').close();
+    $('photo-source-title').textContent = 'Replace photo';
+    showSheet($('dlg-photo-source'));
+  });
   $('photo-remove').addEventListener('click', (e) => {
     const btn = e.currentTarget;
     gated('Photo hatane ke liye PIN', () => armConfirm(btn, 'del-photo'), () => {
-      photoState = { mode: 'removed', b64: null, id: null };
+      if (multiPhotoSupported()) draftPhotos.splice(photoViewer.index, 1);
+      else photoState = { mode: 'removed', b64: null, id: null };
       setPhotoUI();
       $('dlg-photo').close();
       toast('Photo hata di — entry save karein');
@@ -2507,48 +2853,21 @@ function init() {
       amount,
       comment: $('txn-comment').value.trim(),
     };
-    if (photoState.mode === 'new') payload.photo = photoState.b64;
-    if (photoState.mode === 'removed') payload.photo = '';
-
-    if (editingTxnId) {
-      const t = db.transactions.find((x) => String(x.id) === String(editingTxnId));
-      // The entry can go away underneath an open dialog (a refresh, a switch,
-      // a rolled-back write). Say so in the form instead of throwing — the
-      // dialog is method="dialog" and would close on a thrown edit, silently.
-      if (!t) {
-        e.preventDefault();
-        errEl.textContent = 'Yeh entry ab yahan nahi hai — band karke dobara kholein.';
-        errEl.hidden = false;
-        return;
-      }
-      const pre = clone(t);   // rollback pre-image, taken before we overwrite it
-      const localPhoto = photoState.mode === 'new' ? 'pending'
-        : photoState.mode === 'removed' ? '' : (t.photo || '');
-      Object.assign(t, payload, { user_name: payload.user_id, photo: localPhoto });
-      const queuedAdd = isTmp(editingTxnId) && queuedAddFor(editingTxnId);
-      if (queuedAdd) {
-        Object.assign(queuedAdd.payload.data, payload);
-        queuedAdd.label = describeWrite(queuedAdd.action, queuedAdd.payload, queuedAdd.undo);
-        saveQueue(); processQueue();
-      } else {
-        enqueue('updateTxn', { id: editingTxnId, data: payload }, null, { type: 'txn', txn: pre });
-      }
-    } else {
-      const tmpId = tmpTxnId();
-      // local copy carries a marker, never the photo bytes (those live in the queue payload)
-      const localTxn = Object.assign({ id: tmpId, user_name: payload.user_id }, payload);
-      localTxn.photo = photoState.mode === 'new' ? 'pending' : '';
-      db.transactions.push(localTxn);
-      enqueue('addTxn', { data: payload }, tmpId);
+    if (!multiPhotoSupported()) {
+      if (photoState.mode === 'new') payload.photo = photoState.b64;
+      if (photoState.mode === 'removed') payload.photo = '';
     }
-    saveCache();
-    render();
-    saveReadback(payload);
+    try { saveTransaction(payload); }
+    catch (err) {
+      e.preventDefault();
+      errEl.textContent = err.message; errEl.hidden = false;
+    }
   });
   $('txn-delete').addEventListener('click', (e) => {
     const btn = e.currentTarget;
     const gateId = editingTxnId;   // named before any await can move underneath us
     gated('Entry hatane ke liye PIN', () => armConfirm(btn, 'del-txn:' + gateId), () => {
+      if (multiPhotoSupported()) { deleteMultiEntry(); return; }
       $('dlg-txn').close();
       const id = editingTxnId;
       const pre = clone(db.transactions.find((x) => String(x.id) === String(id)));
@@ -2715,11 +3034,12 @@ function init() {
     // the PIN's grace window has no business surviving that.
     if (document.visibilityState === 'hidden') pinOkUntil = 0;
     if (document.visibilityState === 'hidden') closeCamera();
+    if (document.visibilityState === 'visible') { retryPhotoJobs(); refresh(true); }
   });
   window.addEventListener('pagehide', closeCamera);
 
   // resync when network returns
-  window.addEventListener('online', () => { setOffline(false); processQueue(); });
+  window.addEventListener('online', () => { setOffline(false); retryPhotoJobs(); refresh(true); });
   window.addEventListener('offline', () => setOffline(true));
 
   // a link tapped while the app is already open (installed PWAs stay alive for
@@ -2831,6 +3151,8 @@ function openTxnForm(type, txn) {
   photoState = (txn && txn.photo && txn.photo !== 'pending')
     ? { mode: 'existing', b64: null, id: txn.photo }
     : { mode: 'none', b64: null, id: null };
+  draftPhotos = txn ? photosFor(txn).map((p) => ({ ...p })) : [];
+  originalDraftPhotos = draftPhotos.map((p) => ({ ...p }));
   setPhotoUI();
   $('txn-delete').hidden = !txn;
   $('txn-delete').textContent = 'Delete';

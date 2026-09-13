@@ -47,7 +47,7 @@ No contacts, no email, no location, no "all your Drive". If a setup guide ever a
 2. Google shows **"Google hasn't verified this app."** This is expected and correct: you just created this app, in this account, thirty seconds ago — there is no company behind it for Google to verify. That's the feature.
 3. Click **Advanced → Go to … (unsafe) → Allow**.
 4. When it finishes, open the execution log (View → Logs / Executions). You'll see:
-   `Bahi v6 ready — auto-update OFF (standard mode; see SETUP.md to enable). API key: a1b2c3…`
+   `Bahi v9 ready — auto-update OFF (standard mode; see SETUP.md to enable). API key: a1b2c3…`
 5. **Copy that API key somewhere safe** (the shop's notebook is fine). It is the password to this ledger. It's also stored in the script's properties, so it survives everything — but written down beats "I forget".
 
 ### 4. Deploy the web app
@@ -80,6 +80,17 @@ The shopkeeper does Part 0. Done: their sheet, their backend, their phone.
 ---
 
 ## Part 2 — Auto-update mode (optional, technical)
+
+### Upgrading an existing standard-mode customer to v9
+
+After rollout approval, replace `Code.gs` with v9, save, then **Deploy → Manage
+deployments → Edit → New version → Deploy**. Keep the existing deployment URL,
+API key, Master PIN and standard manifest: v9 needs no additional scopes.
+The backend adds the `photos` column and `photo_uploads` tab automatically;
+single-photo rows keep their current Drive files. The app enables five-photo
+controls when `list` advertises the capability. Do not remove the upload-history
+tab. Once a ledger has multiple-photo entries, keep v9 during a frontend rollback.
+See [MULTIPLE-PHOTOS.md](MULTIPLE-PHOTOS.md) for test and release gates.
 
 **Standard mode is the default and is fine.** When a backend update ships (rare — a few times a year at most), the app shows a notice and the update is a guided two-minute repeat of steps 2–4 above. Old backends keep working regardless — updates are never urgent.
 

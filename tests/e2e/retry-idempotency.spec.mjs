@@ -19,7 +19,7 @@ import { openLedger, openCustomer, queueLen, lsJSON, TINY_PNG } from './helpers.
    it applies the write to the sheet and then aborts the reply. */
 
 async function deleteAtta(page) {
-  await page.locator('.txn-row', { hasText: 'atta' }).click();
+  await page.locator('.txn-row', { hasText: 'atta' }).locator('.txn-text').click();
   const del = page.locator('#txn-delete');
   await del.click();                       // arms
   await expect(del).toHaveText('Pakka?');

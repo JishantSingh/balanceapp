@@ -28,7 +28,7 @@ const openSettings = async (page) => {
 };
 
 const openEntry = async (page, text) => {
-  await page.locator('.txn-row', { hasText: text }).click();
+  await page.locator('.txn-row', { hasText: text }).locator('.txn-text').click();
   await expect(page.locator('#dlg-txn')).toBeVisible();
 };
 
@@ -139,7 +139,7 @@ test('a configured PIN protects the edit sheet before any existing entry can cha
   await openLedger(page, backend);
   await openCustomer(page, 'Ramu Halwai');
 
-  await page.locator('.txn-row', { hasText: 'atta' }).click();
+  await page.locator('.txn-row', { hasText: 'atta' }).locator('.txn-text').click();
   await expect(page.locator('#dlg-pin')).toBeVisible();
   await expect(page.locator('#pin-title')).toHaveText('Entry badalne ke liye PIN');
   await expect(page.locator('#dlg-txn')).toBeHidden();
@@ -162,7 +162,7 @@ test('the PIN that opens an edit sheet also authorizes its delete', async ({ pag
   await openLedger(page, backend);
   await openCustomer(page, 'Ramu Halwai');
 
-  await page.locator('.txn-row', { hasText: 'atta' }).click();
+  await page.locator('.txn-row', { hasText: 'atta' }).locator('.txn-text').click();
   await typePin(page, '1234');
   await expect(page.locator('#dlg-txn')).toBeVisible();
   await page.locator('#txn-delete').click();
@@ -179,7 +179,7 @@ test('three wrong PINs lock the pad, with a countdown and a way out', async ({ p
   await openLedger(page, backend);
   await openCustomer(page, 'Ramu Halwai');
 
-  await page.locator('.txn-row', { hasText: 'atta' }).click();
+  await page.locator('.txn-row', { hasText: 'atta' }).locator('.txn-text').click();
   await expect(page.locator('#dlg-pin')).toBeVisible();
   await expect(page.locator('#pin-title')).toHaveText('Entry badalne ke liye PIN');
   await expect(page.locator('#dlg-txn')).toBeHidden();
@@ -213,7 +213,7 @@ test('one correct PIN covers the next couple of minutes of work', async ({ page 
   await openLedger(page, backend);
   await openCustomer(page, 'Ramu Halwai');
 
-  await page.locator('.txn-row', { hasText: 'atta' }).click();
+  await page.locator('.txn-row', { hasText: 'atta' }).locator('.txn-text').click();
   await typePin(page, '1234');
   await expect(page.locator('#dlg-txn')).toBeVisible();
   await page.locator('#txn-delete').click();
@@ -236,7 +236,7 @@ test('a device that never set the PIN still has to type it, and adopts a changed
   expect(cached.pin.hash).toBe(pinHash(SALT, '1234'));
 
   await openCustomer(page, 'Ramu Halwai');
-  await page.locator('.txn-row', { hasText: 'atta' }).click();
+  await page.locator('.txn-row', { hasText: 'atta' }).locator('.txn-text').click();
   await expect(page.locator('#dlg-pin')).toBeVisible();
   await page.locator('#dlg-pin [data-close]').click();
   await expect(page.locator('#dlg-pin')).toBeHidden();
@@ -249,7 +249,7 @@ test('a device that never set the PIN still has to type it, and adopts a changed
   await expect.poll(async () => ((await lsJSON(page, 'bahi.cache')).pin || {}).salt).toBe(salt2);
 
   await openCustomer(page, 'Ramu Halwai');
-  await page.locator('.txn-row', { hasText: 'atta' }).click();
+  await page.locator('.txn-row', { hasText: 'atta' }).locator('.txn-text').click();
   await typePin(page, '1234');                       // yesterday's PIN
   await expect(page.locator('#pin-error')).toContainText('PIN galat hai');
   await typePin(page, '5678');
@@ -264,7 +264,7 @@ test('the PIN verifies with the network dead — the delete simply queues', asyn
   await openCustomer(page, 'Ramu Halwai');
 
   backend.setMode('down');                          // hash is on-device; nothing to ask anyone
-  await page.locator('.txn-row', { hasText: 'atta' }).click();
+  await page.locator('.txn-row', { hasText: 'atta' }).locator('.txn-text').click();
   await expect(page.locator('#dlg-pin')).toBeVisible();
   await typePin(page, '1234');
   await expect(page.locator('#dlg-txn')).toBeVisible();
@@ -348,7 +348,7 @@ test('the existing-entry unlock also covers photo removal inside that edit', asy
   await openLedger(page, backend);
   await openCustomer(page, 'Ramu Halwai');
 
-  await page.locator('.txn-row', { hasText: 'photo wala' }).click();
+  await page.locator('.txn-row', { hasText: 'photo wala' }).locator('.txn-text').click();
   await expect(page.locator('#pin-title')).toHaveText('Entry badalne ke liye PIN');
   await typePin(page, '1234');
   await expect(page.locator('#dlg-txn')).toBeVisible();
@@ -373,7 +373,7 @@ test('"PIN bhool gaye?" hands the locked-out owner over to the Master PIN', asyn
   await openLedger(page, backend);
   await openCustomer(page, 'Ramu Halwai');
 
-  await page.locator('.txn-row', { hasText: 'atta' }).click();
+  await page.locator('.txn-row', { hasText: 'atta' }).locator('.txn-text').click();
   await expect(page.locator('#dlg-pin')).toBeVisible();
   await page.locator('#pin-forgot').click();
 
@@ -390,7 +390,7 @@ test('"PIN bhool gaye?" hands the locked-out owner over to the Master PIN', asyn
 
   // The abandoned edit stays closed. Opening it again asks for the new PIN,
   // because resetting the PIN deliberately leaves no grace window behind.
-  await page.locator('.txn-row', { hasText: 'atta' }).click();
+  await page.locator('.txn-row', { hasText: 'atta' }).locator('.txn-text').click();
   await expect(page.locator('#dlg-pin')).toBeVisible();
   await typePin(page, '5678');
   await expect(page.locator('#dlg-txn')).toBeVisible();
@@ -412,7 +412,7 @@ test('the grace window does not follow the phone into another khata', async ({ p
 
   // buy a grace window in khata A…
   await openCustomer(page, 'Ramu Halwai');
-  await page.locator('.txn-row', { hasText: 'atta' }).click();
+  await page.locator('.txn-row', { hasText: 'atta' }).locator('.txn-text').click();
   await typePin(page, '1234');
   await expect(page.locator('#dlg-txn')).toBeVisible();
   await page.locator('#txn-delete').click();
@@ -430,7 +430,7 @@ test('the grace window does not follow the phone into another khata', async ({ p
   await openCustomer(page, 'Naya Khata Wala');
 
   // A's PIN bought nothing here — B asks, in B's own PIN
-  await page.locator('.txn-row', { hasText: 'naya' }).click();
+  await page.locator('.txn-row', { hasText: 'naya' }).locator('.txn-text').click();
   await expect(page.locator('#dlg-pin')).toBeVisible();
   await typePin(page, '1234');
   await expect(page.locator('#pin-error')).toContainText('PIN galat hai');

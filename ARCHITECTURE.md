@@ -2,6 +2,15 @@
 
 *11 Aug 2026. The load-bearing document: how code divides between frontend and backend, why, and how that division survives distribution to merchants we never meet.*
 
+**v9 update (13 September 2026):** attachments are an ordered `photos` collection;
+`photo` remains the legacy primary. Financial writes and independent photo jobs
+share the durable local queue, with a 3 MiB pending-image budget. Apps Script owns
+the persistent `photo_uploads` reservation/cancellation journal and pre-generated
+Drive IDs; it also restores deleted files for Undo. No pending-image IndexedDB
+migration or scope expansion is included. See [MULTIPLE-PHOTOS.md](MULTIPLE-PHOTOS.md)
+for the current protocol and compatibility contract; historical size estimates
+below predate this feature.
+
 ## 0 · The picture
 
 ```mermaid
