@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { createBackend, seedLedger, MOCK_EXEC } from '../mock-backend.mjs';
-import { openLedger, decodeHash, stubClipboard } from './helpers.mjs';
+import { openLedger, openCustomer, decodeHash, stubClipboard } from './helpers.mjs';
 
 /* The customer dialog holds two things that only bite much later: a phone
    number that WhatsApp will refuse days from now (audit 1.5), and the safe
@@ -13,6 +13,66 @@ async function newCustomer(page, { name, phone }) {
   if (phone !== undefined) await page.locator('#cust-input-phone').fill(phone);
   await page.locator('#cust-save').click();
 }
+
+test('name fields request word capitals but preserve manually typed casing on add and edit', async ({ page }) => {
+  const backend = createBackend(seedLedger());
+  await openLedger(page, backend);
+  await page.locator('#fab').click();
+  const input = page.locator('#cust-input-name');
+  await expect(input).toHaveAttribute('autocapitalize', 'words');
+  // Physical keyboard input deliberately bypasses the mobile keyboard hint.
+  await input.pressSequentially('ram mcDonald');
+  await expect(input).toHaveValue('ram mcDonald');
+  await page.locator('#cust-save').click();
+  await expect.poll(() => backend.state.users.some(u => u.name === 'ram mcDonald')).toBe(true);
+  await openCustomer(page, 'ram mcDonald');
+  await page.locator('#cust-head-main').click();
+  await expect(input).toHaveAttribute('autocapitalize', 'words');
+  await expect(input).toHaveValue('ram mcDonald');
+  await input.fill('ramu mcDonald');
+  await page.locator('#cust-save').click();
+  await expect.poll(() => backend.state.users.some(u => u.name === 'ramu mcDonald')).toBe(true);
+  await page.locator('#cust-head-main').click();
+  await expect(input).toHaveValue('ramu mcDonald');
+});
+
+test('pasted names keep their original casing and scripts when saved and reopened', async ({ page, context }) => {
+  const backend = createBackend(seedLedger());
+  await openLedger(page, backend);
+  await page.locator('#fab').click();
+  const pasted = 'mcDonald  IIT émilie anne-marie o’neil राम कुमार';
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.evaluate(text => navigator.clipboard.writeText(text), pasted);
+  await page.locator('#cust-input-name').press('ControlOrMeta+v');
+  await expect(page.locator('#cust-input-name')).toHaveValue(pasted);
+  await page.locator('#cust-save').click();
+  await expect.poll(() => backend.state.users.some(u => u.name === pasted)).toBe(true);
+  await openCustomer(page, pasted);
+  await page.locator('#cust-head-main').click();
+  await expect(page.locator('#cust-input-name')).toHaveValue(pasted);
+});
+
+test('search-prefilled names are not rewritten by the keyboard hint', async ({ page }) => {
+  await openLedger(page, createBackend(seedLedger()));
+  await page.locator('#search').fill('naya vyapari');
+  await page.locator('#search-empty-add').click();
+  await expect(page.locator('#cust-input-name')).toHaveValue('naya vyapari');
+  await expect(page.locator('#search')).toHaveValue('naya vyapari');
+});
+
+test('existing names remain unchanged on phone-only edits', async ({ page }) => {
+  const seed = seedLedger();
+  seed.users[0].name = 'ramu halwai';
+  const backend = createBackend(seed);
+  await openLedger(page, backend);
+  await openCustomer(page, 'ramu halwai');
+  await page.locator('#cust-head-main').click();
+  await expect(page.locator('#cust-input-name')).toHaveValue('ramu halwai');
+  await page.locator('#cust-input-phone').fill('9876543210');
+  await page.locator('#cust-save').click();
+  await expect.poll(() => backend.state.users[0].phone).toBe('9876543210');
+  expect(backend.state.users[0].name).toBe('ramu halwai');
+});
 
 test('a phone number that cannot work is refused before it is saved', async ({ page }) => {
   const backend = createBackend(seedLedger());
