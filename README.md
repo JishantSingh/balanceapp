@@ -21,7 +21,7 @@ There is no central server, no company in the middle, and nothing to pay — eve
 - Per-customer two-column ledger (**You gave** / **You got**), month-wise
 - Add / edit / delete entries and customers (with double-tap confirm) — the buttons say **Given** (red) and **Received** (green)
 - **Up to five bill / parchi photos per entry** with v9 — camera or multi-file gallery, horizontally scrolling thumbnails, PIN-free viewing, and PIN-protected editing. Stored in a "Bahi Photos" folder in *your* Drive, never made public. Older backends retain one-photo controls.
-- **WhatsApp payment reminders** — free, via `wa.me` links with an editable message template (`{name}`, `{amount}`, `{merchant}`)
+- **Share balance cards** — a large red/green PNG plus configurable WhatsApp text, with download/copy fallbacks. A successful ledger sync is required; no Business API or backend upgrade.
 - **Customer passbook links** — each reminder can carry a private read-only link where that customer sees their own ledger and live balance; revoke it anytime by clearing their `token` cell in the sheet
 - Tap-to-call customers
 - Works offline (shows last-synced data), installs to the Android home screen
@@ -100,9 +100,24 @@ The clean "AppSheet-like" flow:
 
 Their copy, their account, their data. You're never in the loop.
 
-## WhatsApp reminders
+## WhatsApp balance sharing
 
-The **Remind on WhatsApp** button appears on any customer with a due balance and a phone number. It opens WhatsApp with a pre-filled message — no WhatsApp Business API, no cost, and the merchant sees/edits the message before sending. The template lives in **Settings**:
+**Share balance** appears for either non-zero balance direction, including customers
+without a saved phone number. After pending financial changes sync, the app reads
+the ledger again and previews a locally generated PNG and accompanying text.
+Red **Aapka baki** means the customer owes you; green **Aapko milenge** means you
+owe the customer. The card contains the shop, customer, amount and snapshot date;
+the reminder wording stays outside the image.
+
+**Share image + text** opens the phone's share menu: choose WhatsApp and the
+recipient. If the receiving app omits the caption, use **Copy message**.
+**Download image** and **Text only** are also available; Text only opens the saved
+customer's chat via `wa.me`. No Business API or additional Google permissions are
+needed. Native share-menu completion does not confirm message delivery.
+
+Settings holds separate messages for the two directions, with `{name}`, `{amount}`,
+`{merchant}` and `{passbook}` placeholders. Existing payment-reminder text is
+preserved; the green default is informational. Example red template:
 
 ```
 Namaste {name} ji 🙏
@@ -111,6 +126,8 @@ Dhanyavaad!
 ```
 
 Numbers are normalized with the country code from Settings (default `91`).
+See [BALANCE-SHARING.md](BALANCE-SHARING.md) for behavior, test coverage and the
+separate phone/browser acceptance checklist.
 
 ## Data format
 

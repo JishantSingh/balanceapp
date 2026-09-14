@@ -1,12 +1,13 @@
 /* Bahi service worker — caches the app shell so the app opens instantly
    and works offline (data itself is cached by app.js in localStorage). */
 
-const CACHE = 'bahi-shell-v25';
+const CACHE = 'bahi-shell-v26';
 const SHELL = [
   './',
   './index.html',
   './styles.css',
   './app.js',
+  './balance-card.js',
   './manifest.webmanifest',
   './icons/icon.svg',
   './icons/icon-192.png',
