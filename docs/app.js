@@ -30,6 +30,15 @@ const DEFAULT_TEMPLATE =
   'Kripya jald bhugtan karein.\n' +
   'Apna pura hisaab yahan dekhein: {passbook}\n' +
   'Dhanyavaad!';
+const DEFAULT_CREDIT_TEMPLATE =
+  'Namaste {name} ji 🙏\n' +
+  '{merchant} ke hisaab mein aapko {amount} milenge.\n' +
+  'Apna pura hisaab yahan dekhein: {passbook}\n' +
+  'Dhanyavaad!';
+
+const BALANCE_SHARE_TIMEOUT_MS = 30000;
+let balanceShareSession = null;
+let balanceNativeBusy = false;
 
 let config = loadJSON(LS_CONFIG) || null;
 // the cached ledger: users + transactions, plus whatever the last `list`
@@ -110,6 +119,7 @@ const screens = {
 };
 
 function show(name) {
+  if (name !== 'customer' && balanceShareSession) closeBalanceShare();
   Object.values(screens).forEach((s) => (s.hidden = true));
   screens[name].hidden = false;
   window.scrollTo(0, 0);
@@ -311,14 +321,14 @@ async function apiWith(cfg, action, payload, opts) {
     if (action === 'list') {
       endpoint.searchParams.set('action', 'list');
       endpoint.searchParams.set('key', cfg.key);
-      res = await fetch(endpoint.toString());
+      res = await fetch(endpoint.toString(), { signal: opts?.signal });
     } else {
       // text/plain keeps the request "simple" so Apps Script needs no CORS preflight
       res = await fetch(endpoint.toString(), {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify(Object.assign({ action, key: cfg.key }, payload)),
-        signal: controller?.signal,
+        signal: opts?.signal || controller?.signal,
       });
     }
     // A reply that is not JSON is not a refusal: it is Google's sign-in page
@@ -407,25 +417,29 @@ async function refresh(silent) {
     const data = await api('list');
     // stale answer, another ledger, or a write made while we waited: keep local
     if (gen !== refreshGen || ledger !== ledgerGen || hasFinancialWrites()) { render(); return; }
-    const fresh = normalizeData(data);
-    db = {
-      users: keepLocalMeta(fresh.users), transactions: fresh.transactions,
-      pin: fresh.pin, sheetUrl: fresh.sheetUrl, capabilities: fresh.capabilities,
-    };
-    const orphaned = queue.filter(j => isPhotoJob(j) && !isTmp(j.payload.id) &&
-      !db.transactions.some(t => String(t.id) === String(j.payload.id)));
-    if (orphaned.length) {
-      try {
-        commitQueue(queue.filter(j => !orphaned.includes(j)));
-        toast('Entry removed on another device; its pending photos were cancelled.');
-      } catch (err) { toast(err.message, true); }
-    }
-    saveCache();
-    render();
+    applyLedgerList(data);
   } catch (err) {
     if (!silent) toast('Could not sync: ' + err.message, true);
     render(); // fall back to cached copy
   }
+}
+
+function applyLedgerList(data) {
+  const fresh = normalizeData(data);
+  db = {
+    users: keepLocalMeta(fresh.users), transactions: fresh.transactions,
+    pin: fresh.pin, sheetUrl: fresh.sheetUrl, capabilities: fresh.capabilities,
+  };
+  const orphaned = queue.filter(j => isPhotoJob(j) && !isTmp(j.payload.id) &&
+    !db.transactions.some(t => String(t.id) === String(j.payload.id)));
+  if (orphaned.length) {
+    try {
+      commitQueue(queue.filter(j => !orphaned.includes(j)));
+      toast('Entry removed on another device; its pending photos were cancelled.');
+    } catch (err) { toast(err.message, true); }
+  }
+  saveCache();
+  render();
 }
 
 // ---------------------------------------------------------------- offline write queue
@@ -492,6 +506,7 @@ function updateChips() {
   $('chip-auth').hidden = !authBad;
   // every chip is painted here, so nothing can leave one stuck on screen
   $('chip-offline').hidden = !offline;
+  observeBalanceShare();
 }
 
 function makeWrite(action, payload, tmpId, undo) {
@@ -819,6 +834,9 @@ function remapUserId(tmpId, realId, serverUser) {
     if (item.payload && item.payload.id === tmpId) item.payload.id = realId;
   });
   if (currentCustomerId === tmpId) currentCustomerId = realId;
+  if (balanceShareSession?.customerId === tmpId && balanceShareSession.ledger === ledgerGen) {
+    balanceShareSession.customerId = realId;
+  }
   saveCache();
   saveQueue();
   saveFailed();
@@ -1212,9 +1230,8 @@ function renderCustomer() {
 
   const remind = $('btn-remind');
   const hint = $('remind-hint');
-  if (bal > 0 && u.phone) { remind.hidden = false; hint.hidden = true; }
-  else if (bal > 0 && !u.phone) { remind.hidden = true; hint.hidden = false; }
-  else { remind.hidden = true; hint.hidden = true; }
+  remind.hidden = !Number.isFinite(bal) || Math.round(Math.abs(bal) * 100) === 0;
+  hint.hidden = true; // file sharing selects a recipient in the phone's share menu
 
   const txns = txnsOf(u.user_id);
   let lastMonth = '';
@@ -1334,12 +1351,14 @@ function saveThumbs() {
 }
 
 function goHome() {
+  closeBalanceShare();
   currentCustomerId = null;
   show('home');
   renderHome();
 }
 
 function openCustomer(id, push) {
+  if (String(currentCustomerId) !== String(id)) closeBalanceShare();
   currentCustomerId = id;
   show('customer');
   renderCustomer();
@@ -1394,6 +1413,7 @@ let connecting = false;      // a validation is in flight — leave config alone
 let pendingInvite = null;    // an invite waiting on the switch dialog
 
 function wipeLedgerData() {
+  closeBalanceShare();
   ledgerGen++;   // whatever is on the wire now belongs to the khata we are leaving
   resetPhotoControls();
   [LS_CACHE, LS_QUEUE, LS_FAILED, LS_DEMO, LS_THUMBS].forEach((k) => localStorage.removeItem(k));
@@ -1430,6 +1450,7 @@ function freshConfig(url, key, prev) {
     cc: (prev && prev.cc) || '91',
     merchant: sameLedger ? (prev.merchant || '') : '',
     template: (prev && prev.template) || DEFAULT_TEMPLATE,
+    creditTemplate: (prev && prev.creditTemplate) || DEFAULT_CREDIT_TEMPLATE,
   };
 }
 
@@ -1649,22 +1670,205 @@ function passbookLink(u) {
 
 // ---------------------------------------------------------------- reminders
 
-function reminderLink(u, bal) {
-  const template = (config && config.template) || DEFAULT_TEMPLATE;
+function reminderMessage(u, bal) {
+  const template = bal < 0 ? (config.creditTemplate || DEFAULT_CREDIT_TEMPLATE)
+    : (config.template || DEFAULT_TEMPLATE);
   const merchant = (config && config.merchant) || 'hamari dukaan';
-  const pb = passbookLink(u);
-  let msg = template
-    .replaceAll('{name}', u.name)
-    .replaceAll('{amount}', money(bal))
-    .replaceAll('{merchant}', merchant);
-  if (msg.includes('{passbook}')) {
-    // strip the whole line cleanly when no link is available yet
-    msg = pb ? msg.replaceAll('{passbook}', pb)
-             : msg.split('\n').filter((line) => !line.includes('{passbook}')).join('\n');
-  } else if (pb) {
+  const pb = config.demo ? '' : passbookLink(u); // demo passbooks only exist on this device
+  const hasPassbook = template.includes('{passbook}');
+  // Substitute once, literally: names/currency can contain $ or braces.
+  // A revoked link removes its whole template line, as in the text-only flow.
+  const source = !pb && hasPassbook
+    ? template.split('\n').filter(line => !line.includes('{passbook}')).join('\n') : template;
+  const values = { name: u.name, amount: money(bal), merchant, passbook: pb };
+  let msg = source.replace(/\{(name|amount|merchant|passbook)\}/g, (_, key) => values[key]);
+  if (!hasPassbook && pb) {
     msg += '\nApna pura hisaab: ' + pb;
   }
-  return 'https://wa.me/' + normalizePhone(u.phone) + '?text=' + encodeURIComponent(msg);
+  return msg;
+}
+
+function reminderLink(u, bal) {
+  return 'https://wa.me/' + normalizePhone(u.phone) + '?text=' + encodeURIComponent(reminderMessage(u, bal));
+}
+
+// ---------------------------------------------------------------- balance-card sharing
+
+function balanceShareSignature() {
+  const u = currentCustomer();
+  return JSON.stringify([ledgerGen, currentCustomerId, config?.url, config?.key,
+    config?.merchant, config?.currency, config?.cc, config?.template, config?.creditTemplate,
+    u?.user_id, u?.name, u?.phone, u?.token, u ? balanceOf(u.user_id) : null]);
+}
+function balanceShareIsCurrent(s) {
+  return s === balanceShareSession && $('dlg-balance-share').open && !connecting &&
+    s.ledger === ledgerGen && String(s.customerId) === String(currentCustomerId) &&
+    s.url === config?.url && s.key === config?.key;
+}
+function releaseBalanceCard(s) {
+  if (s?.objectUrl) URL.revokeObjectURL(s.objectUrl);
+  if (s) { s.objectUrl = null; s.file = null; }
+}
+function closeBalanceShare() {
+  const s = balanceShareSession;
+  balanceShareSession = null;
+  if (s) { clearTimeout(s.timer); s.controller.abort(); releaseBalanceCard(s); }
+  if (!$('dlg-balance-share')) return; // an installed app may still have the previous HTML shell
+  $('balance-share-image').removeAttribute('src');
+  $('balance-share-message').textContent = '';
+  if ($('dlg-balance-share').open) $('dlg-balance-share').close();
+}
+function failBalanceShare(s, message) {
+  if (s !== balanceShareSession) return;
+  clearTimeout(s.timer); s.controller.abort(); releaseBalanceCard(s);
+  s.phase = 'error'; s.status = message;
+  $('balance-share-image').removeAttribute('src');
+  $('balance-share-message').textContent = '';
+  paintBalanceShare(s);
+}
+function observeBalanceShare() {
+  const s = balanceShareSession;
+  if (!s) return;
+  if (!balanceShareIsCurrent(s)) { closeBalanceShare(); return; }
+  const stamp = queue.filter(j => !isPhotoJob(j)).map(j => j.qid).join(',');
+  if (stamp !== s.queueStamp) { s.queueStamp = stamp; s.financialRevision++; }
+  if (s.phase === 'ready' && (hasFinancialWrites() || failed.some(j => !isPhotoJob(j)) ||
+      (!config.demo && (offline || authBad || !navigator.onLine)) ||
+      s.signature !== balanceShareSignature())) {
+    failBalanceShare(s, 'Balance or account details changed. Retry sync and review the new card.');
+  }
+}
+function paintBalanceShare(s) {
+  if (s !== balanceShareSession) return;
+  const ready = s.phase === 'ready';
+  $('balance-share-status').textContent = s.status;
+  $('balance-share-status').classList.toggle('error', s.phase === 'error' || !!s.imageError);
+  $('balance-share-retry').hidden = s.phase !== 'error';
+  $('balance-share-ready').hidden = !ready;
+  $('balance-share-image').hidden = !ready || !s.objectUrl;
+  if (s.objectUrl) $('balance-share-image').src = s.objectUrl;
+  $('balance-share-message').textContent = ready ? s.snapshot.message : '';
+  let canShareImage = false;
+  try { canShareImage = !!(s.file && navigator.share && navigator.canShare?.({ files: [s.file] })); }
+  catch (err) { /* native sharing is optional */ }
+  s.canShareImage = canShareImage;
+  $('balance-share-native').disabled = !ready || !canShareImage || balanceNativeBusy;
+  $('balance-share-download').disabled = !ready || !s.file || balanceNativeBusy;
+  $('balance-share-copy').disabled = !ready || balanceNativeBusy;
+  $('balance-share-text').disabled = !ready || !s.snapshot?.phone || balanceNativeBusy;
+  $('balance-share-help').textContent = (canShareImage
+    ? 'Choose WhatsApp and the recipient in the share menu. If the message is omitted, use Copy message.'
+    : 'Image sharing is unavailable here. Download the image and copy the message, or use Text only.') +
+    (ready && !s.snapshot.phone ? ' Add a phone number to open the customer’s chat directly.' : '');
+}
+function readyBalanceShare() {
+  observeBalanceShare();
+  const s = balanceShareSession;
+  return s?.phase === 'ready' && !balanceNativeBusy ? s : null;
+}
+function openBalanceShare() {
+  if (!currentCustomer()) return;
+  if (!$('dlg-balance-share')) {
+    showUpdateBar();
+    toast('Reload the new app version to use balance sharing.');
+    return;
+  }
+  closeBalanceShare();
+  const s = { ledger: ledgerGen, customerId: currentCustomerId, url: config.url, key: config.key,
+    controller: new AbortController(), phase: 'loading', status: 'Syncing the ledger…',
+    financialRevision: 0, queueStamp: queue.filter(j => !isPhotoJob(j)).map(j => j.qid).join(',') };
+  balanceShareSession = s;
+  showSheet($('dlg-balance-share'));
+  paintBalanceShare(s);
+  s.timer = setTimeout(() => failBalanceShare(s, 'Preparation timed out. Your queued work is kept; retry when connected.'), BALANCE_SHARE_TIMEOUT_MS);
+  prepareBalanceShare(s);
+}
+async function prepareBalanceShare(s) {
+  const assertCurrent = () => {
+    if (!balanceShareIsCurrent(s) || s.phase !== 'loading') throw new Error('Sharing cancelled.');
+  };
+  try {
+    assertCurrent();
+    if (!config.demo && !navigator.onLine) throw new Error('Connect to the internet and retry sync before sharing.');
+    if (failed.some(j => !isPhotoJob(j))) throw new Error('Resolve failed financial changes first: retry or discard them from the failed-work list.');
+    if (hasFinancialWrites()) {
+      processQueue().catch(() => {}); // the queue retains/reports its own failures
+      while (hasFinancialWrites()) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        assertCurrent();
+        if (failed.some(j => !isPhotoJob(j))) throw new Error('Resolve failed financial changes before sharing.');
+        if (!processing && hasFinancialWrites()) throw new Error('Pending entries could not sync. Your work is kept; retry when connected.');
+      }
+    }
+    assertCurrent();
+    if (failed.some(j => !isPhotoJob(j))) throw new Error('Resolve failed financial changes before sharing.');
+    const revision = s.financialRevision, signature = balanceShareSignature();
+    ++refreshGen; // an earlier background list must not overwrite this snapshot
+    const data = await apiWith(config, 'list', null, { signal: s.controller.signal });
+    assertCurrent();
+    if (!Array.isArray(data?.users) || !Array.isArray(data?.transactions)) throw new Error('The server returned an invalid ledger. Retry sync.');
+    if (revision !== s.financialRevision || hasFinancialWrites() || failed.some(j => !isPhotoJob(j)) ||
+        signature !== balanceShareSignature()) throw new Error('The ledger changed during sync. Retry and review the updated balance.');
+    ++refreshGen;
+    applyLedgerList(data);
+    assertCurrent();
+    const u = currentCustomer(), bal = balanceOf(u.user_id);
+    if (!Number.isFinite(bal)) throw new Error('Balance could not be calculated. Check the ledger first.');
+    if (Math.round(Math.abs(bal) * 100) === 0) {
+      clearTimeout(s.timer); s.phase = 'settled'; s.status = 'No outstanding balance.';
+      paintBalanceShare(s); return;
+    }
+    const now = new Date();
+    const date = `${now.getDate()} ${MONTHS[now.getMonth()]} ${now.getFullYear()}`;
+    s.snapshot = Object.freeze({ merchantName: config.merchant || 'hamari dukaan', customerName: u.name,
+      amountText: money(bal), direction: bal > 0 ? 'due' : 'credit', asOfDate: date,
+      message: reminderMessage(u, bal), phone: u.phone ? normalizePhone(u.phone) : '',
+      filename: 'bahi-balance-' + todayISO() + '.png' });
+    const exportedText = [s.snapshot.merchantName, s.snapshot.customerName, s.snapshot.message].join('\n');
+    if (/#s=/.test(exportedText) || (config.key && exportedText.includes(config.key))) {
+      throw new Error('Remove the owner invite link or API key from the message/account details before sharing.');
+    }
+    s.signature = balanceShareSignature();
+    s.status = 'Preparing the image…'; paintBalanceShare(s);
+    let blob;
+    try {
+      if (!window.BahiBalanceCard?.render) throw new Error('Image component is not loaded. Reload, or use Text only or Copy message.');
+      blob = await window.BahiBalanceCard.render(s.snapshot);
+    }
+    catch (err) { s.imageError = err.message || 'Image creation failed. Use Text only or Copy message.'; }
+    assertCurrent();
+    if (s.signature !== balanceShareSignature() || revision !== s.financialRevision || hasFinancialWrites() ||
+        failed.some(j => !isPhotoJob(j))) throw new Error('Balance or account details changed. Retry sync and review the new card.');
+    if (blob) {
+      s.file = new File([blob], s.snapshot.filename, { type: 'image/png' });
+      s.objectUrl = URL.createObjectURL(s.file);
+      $('balance-share-image').alt = `${s.snapshot.customerName}: ${s.snapshot.direction === 'due' ? 'Aapka baki' : 'Aapko milenge'} ${s.snapshot.amountText}. ${date}.`;
+    }
+    clearTimeout(s.timer);
+    s.phase = 'ready';
+    s.status = s.imageError || (config.demo ? 'Sample balance — no real account is being shared.' : 'Synced. Review the card and message before sharing.');
+    paintBalanceShare(s);
+    $('dlg-balance-share').querySelector('form').scrollTop = 0;
+  } catch (err) {
+    if (balanceShareIsCurrent(s) && s.phase === 'loading') failBalanceShare(s, 'Could not prepare balance: ' + err.message);
+  }
+}
+async function shareBalanceNative() {
+  const s = readyBalanceShare();
+  if (!s?.file || !s.canShareImage) return;
+  balanceNativeBusy = true; paintBalanceShare(s);
+  try {
+    // File is already prepared: preserve the button tap's user activation.
+    await navigator.share({ files: [s.file], text: s.snapshot.message });
+    // Completion means handoff, not that WhatsApp sent/delivered a message.
+  } catch (err) {
+    if (s === balanceShareSession && s.phase === 'ready' && err.name !== 'AbortError') {
+      s.status = 'Could not open sharing. Try Download image, Copy message or Text only.';
+    }
+  } finally {
+    balanceNativeBusy = false;
+    if (balanceShareSession) { observeBalanceShare(); if (balanceShareSession) paintBalanceShare(balanceShareSession); }
+  }
 }
 
 // ---------------------------------------------------------------- photos
@@ -2606,7 +2810,8 @@ function init() {
 
   $('btn-demo').addEventListener('click', () => {
     if (connecting) return;
-    config = { demo: true, currency: '₹', cc: '91', merchant: 'Demo General Store', template: DEFAULT_TEMPLATE };
+    config = { demo: true, currency: '₹', cc: '91', merchant: 'Demo General Store',
+      template: DEFAULT_TEMPLATE, creditTemplate: DEFAULT_CREDIT_TEMPLATE };
     saveJSON(LS_CONFIG, config);
     refresh(true);
     show('home');
@@ -2704,6 +2909,7 @@ function init() {
     $('set-currency').value = config.currency || '₹';
     $('set-cc').value = config.cc || '91';
     $('set-template').value = config.template || DEFAULT_TEMPLATE;
+    if ($('set-credit-template')) $('set-credit-template').value = config.creditTemplate || DEFAULT_CREDIT_TEMPLATE;
     $('set-url').value = config.url || '';
     $('set-key').value = config.key || '';
     const conn = document.querySelector('.settings-conn');
@@ -2729,6 +2935,7 @@ function init() {
   // Leave the demo without destroying it: the sample khata stays on the phone
   // so "Try the demo" comes back to the same numbers.
   $('btn-leave-demo').addEventListener('click', () => {
+    closeBalanceShare();
     $('dlg-settings').close();
     [LS_CONFIG, LS_CACHE, LS_QUEUE, LS_FAILED, LS_THUMBS].forEach((k) => localStorage.removeItem(k));
     idbPhotosClear();
@@ -2762,6 +2969,7 @@ function init() {
     config.currency = $('set-currency').value.trim() || '₹';
     config.cc = $('set-cc').value.replace(/\D/g, '') || '91';
     config.template = $('set-template').value || DEFAULT_TEMPLATE;
+    if ($('set-credit-template')) config.creditTemplate = $('set-credit-template').value || DEFAULT_CREDIT_TEMPLATE;
     /* Editing the URL or the key here IS switching ledgers — it was the one
        door into a different khata with no validation, no confirm, no wipe,
        and it drained this khata's queue into the other sheet. It goes through
@@ -2802,9 +3010,31 @@ function init() {
     else goHome();
   });
   $('cust-head-main').addEventListener('click', () => openCustomerForm(currentCustomerId));
-  $('btn-remind').addEventListener('click', () => {
-    const u = currentCustomer();
-    window.open(reminderLink(u, balanceOf(u.user_id)), '_blank');
+  $('btn-remind').addEventListener('click', openBalanceShare);
+  $('balance-share-retry')?.addEventListener('click', openBalanceShare);
+  $('balance-share-native')?.addEventListener('click', shareBalanceNative);
+  $('balance-share-copy')?.addEventListener('click', () => {
+    const s = readyBalanceShare();
+    if (!s) return;
+    copyText(s.snapshot.message).then(() => {
+      if (s === balanceShareSession) toast('Message copied — paste it in your chat.');
+    }).catch(() => { if (s === balanceShareSession) toast('Could not copy. Select the message text and copy it manually.', true); });
+  });
+  $('balance-share-text')?.addEventListener('click', () => {
+    const s = readyBalanceShare();
+    if (s?.snapshot.phone) window.open('https://wa.me/' + s.snapshot.phone + '?text=' +
+      encodeURIComponent(s.snapshot.message), '_blank', 'noopener,noreferrer');
+  });
+  $('balance-share-download')?.addEventListener('click', () => {
+    const s = readyBalanceShare();
+    if (!s?.objectUrl) return;
+    const a = document.createElement('a');
+    a.href = s.objectUrl; a.download = s.snapshot.filename;
+    document.body.appendChild(a); a.click(); a.remove();
+  });
+  $('dlg-balance-share')?.addEventListener('cancel', closeBalanceShare);
+  $('dlg-balance-share')?.addEventListener('close', () => {
+    if (!$('dlg-balance-share').open) closeBalanceShare();
   });
   $('btn-gave').addEventListener('click', () => openTxnForm('given', null));
   $('btn-got').addEventListener('click', () => openTxnForm('received', null));
@@ -3098,7 +3328,7 @@ function init() {
     if (document.visibilityState === 'hidden') closeCamera();
     if (document.visibilityState === 'visible') { retryPhotoJobs(); refresh(true); }
   });
-  window.addEventListener('pagehide', closeCamera);
+  window.addEventListener('pagehide', () => { closeCamera(); closeBalanceShare(); });
 
   // resync when network returns
   window.addEventListener('online', () => { setOffline(false); retryPhotoJobs(); refresh(true); });

@@ -133,7 +133,7 @@
     <span id="bal-word" class="balance-word">settled up</span>
     <button id="btn-remind" class="btn btn-wa" hidden>
       <svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 0 0-7.8 13.5L3 21l4.7-1.2A9 9 0 1 0 12 3Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M9 8.5c0 4 2.5 6.5 6.5 6.5l.8-1.8-2-1-.9.7c-1.1-.5-1.8-1.2-2.3-2.3l.7-.9-1-2Z" fill="currentColor"/></svg>
-      Remind on WhatsApp
+      Share balance
     </button>
     <p id="remind-hint" class="remind-hint" hidden>Add a phone number to send reminders</p>
   </div>
@@ -323,9 +323,14 @@
       </label>
     </div>
     <label class="field">
-      <span>WhatsApp reminder message</span>
+      <span>Message when the customer owes you</span>
       <textarea id="set-template" rows="4" spellcheck="false"></textarea>
       <small class="field-help">Use {name}, {amount}, {merchant} and {passbook} — filled in automatically. {passbook} becomes the customer's private ledger link.</small>
+    </label>
+    <label class="field">
+      <span>Message when you owe the customer</span>
+      <textarea id="set-credit-template" rows="4" spellcheck="false"></textarea>
+      <small class="field-help">Use {name}, {amount}, {merchant} and {passbook}. This message accompanies green “Aapko milenge” cards.</small>
     </label>
     <div id="invite-wrap">
       <button type="button" id="btn-invite" class="btn btn-danger-ghost btn-wide">🔗 Doosre phone par ye khata kholein — poora access</button>
@@ -377,6 +382,30 @@
       <span class="flex-spring"></span>
       <button type="button" class="btn btn-ghost" data-close>Rehne dein</button>
       <button type="button" id="switch-go" class="btn btn-ink">Jodein</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ============ BALANCE SHARING ============ -->
+<dialog id="dlg-balance-share" class="sheet" aria-labelledby="balance-share-title">
+  <form method="dialog">
+    <div class="balance-share-heading">
+      <div id="balance-share-title" class="sheet-title">Share balance</div>
+      <button type="submit" class="btn btn-ghost">Close</button>
+    </div>
+    <p id="balance-share-status" class="balance-share-status" role="status"></p>
+    <button id="balance-share-retry" type="button" class="btn btn-ghost" hidden>Retry sync</button>
+    <div id="balance-share-ready" hidden>
+      <img id="balance-share-image" class="balance-share-image" width="1080" height="710" alt="Balance card preview" hidden>
+      <p class="balance-share-label">Accompanying message · configured in Settings</p>
+      <p id="balance-share-message" class="balance-share-message"></p>
+      <p id="balance-share-help" class="balance-share-help"></p>
+      <div class="balance-share-controls">
+        <button id="balance-share-native" type="button" class="btn btn-wa">Share image + text</button>
+        <button id="balance-share-text" type="button" class="btn btn-ghost">Text only</button>
+        <button id="balance-share-download" type="button" class="btn btn-ghost">Download image</button>
+        <button id="balance-share-copy" type="button" class="btn btn-ghost">Copy message</button>
+      </div>
     </div>
   </form>
 </dialog>
@@ -446,6 +475,7 @@
   <button type="button" id="update-dismiss" class="update-x" aria-label="Abhi nahi">✕</button>
 </div>
 
+<script src="balance-card.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
