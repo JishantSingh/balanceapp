@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { createBackend, seedLedger, MOCK_EXEC } from '../mock-backend.mjs';
-import { openLedger, openCustomer, decodeHash, stubClipboard } from './helpers.mjs';
+import { openLedger, openCustomer, decodePassbookLink, stubClipboard } from './helpers.mjs';
 
 /* The customer dialog holds two things that only bite much later: a phone
    number that WhatsApp will refuse days from now (audit 1.5), and the safe
@@ -108,7 +108,7 @@ test('no phone number at all is perfectly fine', async ({ page }) => {
     backend.state.users.some((u) => u.name === 'Bina Phone' && u.phone === '')).toBe(true);
 });
 
-test('the passbook link is offered only where a token exists, and copies a #p= link', async ({ page }) => {
+test('the passbook link is offered only where a token exists, and copies a compact customer link', async ({ page }) => {
   const seed = seedLedger();
   seed.users.push({
     user_id: 'u3', name: 'Bina Token', created_at: '2026-07-03',
@@ -134,6 +134,6 @@ test('the passbook link is offered only where a token exists, and copies a #p= l
   await expect(page.locator('#toast')).toContainText('Passbook link copy ho gaya');
 
   const copied = await page.evaluate(() => window.__copied[0]);
-  expect(copied).toContain('#p=');
-  expect(decodeHash(copied)).toEqual({ u: MOCK_EXEC, t: 'tok_ramu_1234567890' });
+  expect(copied).toContain('/p/#MOCKDEPLOY.');
+  expect(decodePassbookLink(copied)).toEqual({ u: MOCK_EXEC, t: 'tok_ramu_1234567890' });
 });

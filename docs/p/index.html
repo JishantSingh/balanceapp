@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex,nofollow">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src https://script.google.com https://script.googleusercontent.com; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="theme-color" content="#1565c0">
+<title>Bahi — Customer passbook</title>
+<link rel="icon" href="../icons/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+<!-- Intentionally no owner bundle, credentials, storage, navigation or PWA
+     installation here. This is a read-only entry point on the same host. -->
+<section id="screen-passbook" class="screen">
+  <header class="masthead">
+    <div class="wordmark"><span class="wm-hindi">बही</span><span class="wm-dot">·</span><span class="wm-latin">passbook</span></div>
+  </header>
+  <div class="rule-double"></div>
+  <div class="balance-card card">
+    <span id="pb-name" class="pb-name">…</span>
+    <span class="summary-label">balance</span>
+    <span id="pb-amt" class="balance-amt">…</span>
+    <span id="pb-word" class="balance-word"></span>
+  </div>
+  <div class="ledger-cols">
+    <span class="col-label col-gave">given to you</span>
+    <span class="col-label col-got">you paid</span>
+  </div>
+  <ol id="pb-list" class="txn-list"></ol>
+  <p id="pb-status" class="pb-status" role="status">Loading your passbook…</p>
+  <noscript><p class="pb-status">Enable JavaScript to view this customer passbook.</p></noscript>
+  <p class="pb-foot">This passbook comes directly from your shopkeeper's own ledger. Entries update as the khata changes.</p>
+</section>
+<script src="../passbook.js"></script>
+<script src="reader.js"></script>
+</body>
+</html>
