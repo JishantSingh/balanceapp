@@ -172,10 +172,9 @@
   </div>
   <ol id="pb-list" class="txn-list"></ol>
   <p id="pb-status" class="pb-status">Loading your passbook…</p>
-  <!-- the merchant tapping their own customer's link: a way back to the khata -->
-  <p id="pb-mine" class="pb-mine" hidden>
-    <button type="button" id="pb-mine-go" class="btn btn-ghost">Yeh mera ledger hai — kholein</button>
-  </p>
+  <!-- Inert hooks for cached pre-v28 JS, which still looks up these IDs.
+       Inline hiding also works with old CSS. Current JS removes this stub. -->
+  <span id="pb-mine" hidden style="display:none!important" aria-hidden="true"><span id="pb-mine-go"></span></span>
   <p class="pb-foot">This passbook comes directly from your shopkeeper's own ledger. Entries update as the khata changes.</p>
 </section>
 
