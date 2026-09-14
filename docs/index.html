@@ -266,6 +266,15 @@
 <dialog id="dlg-customer" class="sheet">
   <form id="form-customer" method="dialog" novalidate>
     <div id="cust-dlg-title" class="sheet-title">New customer</div>
+    <button type="button" id="cust-contacts" class="btn btn-ghost btn-wide" aria-controls="cust-contact-numbers" aria-expanded="false" hidden>
+      <span aria-hidden="true">👤</span> Choose from contacts
+    </button>
+    <section id="cust-contact-numbers" aria-labelledby="cust-contact-name" hidden>
+      <div id="cust-contact-name"></div>
+      <p class="contact-help">Choose a phone number</p>
+      <div id="cust-contact-options"></div>
+      <button type="button" id="cust-contact-cancel" class="contact-cancel">Cancel selection</button>
+    </section>
     <label class="field">
       <span>Name</span>
       <input id="cust-input-name" type="text" placeholder="e.g. Chetan Kirana Store" autocomplete="off" autocapitalize="words" required>
@@ -280,7 +289,8 @@
       <button type="button" id="cust-passbook" class="btn btn-ghost btn-wide">🔗 Passbook link copy karein</button>
       <small class="field-help">Sirf yeh customer, sirf dekhne ke liye</small>
     </div>
-    <p id="cust-error" class="form-error" hidden></p>
+    <p id="cust-contact-status" class="contact-help" role="status" hidden></p>
+    <p id="cust-error" class="form-error" role="alert" hidden></p>
     <div class="sheet-actions">
       <button type="button" id="cust-delete" class="btn btn-danger-ghost" hidden>Delete</button>
       <span class="flex-spring"></span>
