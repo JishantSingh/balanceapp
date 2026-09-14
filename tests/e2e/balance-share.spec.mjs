@@ -79,7 +79,7 @@ for (const [direction, balance, label, color] of [
     expect(drawn.some(p => /Payment reminder|bhugtan|Dhanyavaad|https?:/.test(p.text))).toBe(false);
     const message = await page.locator('#balance-share-message').textContent();
     expect(message).toContain('₹12,500');
-    expect(message).toContain('#p=');
+    expect(message).toContain('/p/#MOCKDEPLOY.');
     expect(message).not.toContain('#s=');
     expect(message).not.toContain(backend.state.key);
     if (balance < 0) { expect(message).toContain('aapko ₹12,500 milenge'); expect(message).not.toContain('bhugtan'); }

@@ -32,6 +32,14 @@ export const decodeHash = (link) => {
   return JSON.parse(Buffer.from(b64, 'base64').toString());
 };
 
+export const decodePassbookLink = (link) => {
+  const url = new URL(link);
+  if (url.hash.startsWith('#p=')) return decodeHash(link);
+  const dot = url.hash.indexOf('.');
+  return { u: 'https://script.google.com/macros/s/' + url.hash.slice(1, dot) + '/exec',
+    t: decodeURIComponent(url.hash.slice(dot + 1)) };
+};
+
 /* Record clipboard writes instead of touching the real one — headless Chromium
    rejects writeText without a permission grant, and copyText() falls back to
    execCommand, which we could not observe. */

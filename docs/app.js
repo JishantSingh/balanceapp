@@ -39,6 +39,7 @@ const DEFAULT_CREDIT_TEMPLATE =
 const BALANCE_SHARE_TIMEOUT_MS = 30000;
 let balanceShareSession = null;
 let balanceNativeBusy = false;
+let passbookLoadGen = 0;
 
 let config = loadJSON(LS_CONFIG) || null;
 // the cached ledger: users + transactions, plus whatever the last `list`
@@ -121,6 +122,7 @@ const screens = {
 };
 
 function show(name) {
+  if (name !== 'passbook') { passbookLoadGen++; window.BahiPassbook?.cancel(); }
   if (name !== 'customer' && balanceShareSession) closeBalanceShare();
   Object.values(screens).forEach((s) => (s.hidden = true));
   screens[name].hidden = false;
@@ -1589,23 +1591,30 @@ function inviteLink() {
 // #p=… opens the read-only customer passbook. {u,t} = api url + customer token;
 // {d} = demo customer id.
 function applyPassbookLink() {
-  const m = /#p=([A-Za-z0-9\-_]+)/.exec(location.hash);
-  if (!m) return false;
+  if (!/^#p(?:$|=|\d)/.test(location.hash)) return false;
   // Unlike the invite key, the passbook token stays in the URL: it is the
   // customer's only way back in on reload, and it is scoped + revocable.
-  let payload;
-  try {
-    payload = JSON.parse(atob(m[1].replace(/-/g, '+').replace(/_/g, '/')));
-  } catch (e) { return false; }
-  if (!payload.d && !(payload.u && payload.t)) return false;
   show('passbook');
-  renderPassbook(payload);
+  renderPassbook(location.hash);
   return true;
 }
 
-async function renderPassbook(payload) {
+async function renderPassbook(hash) {
+  const gen = ++passbookLoadGen;
+  const active = () => gen === passbookLoadGen && !screens.passbook.hidden;
   const status = $('pb-status');
+  // Clear before an async script load too: stale rows must never remain under
+  // a different customer's link or on an invalid-link error.
+  $('pb-name').textContent = $('pb-amt').textContent = '…';
+  $('pb-word').textContent = '';
+  $('pb-list').replaceChildren();
+  status.hidden = false;
+  status.textContent = 'Loading your passbook…';
   try {
+    // New JS with an older cached HTML shell still supports legacy links.
+    if (!window.BahiPassbook) await import(new URL('passbook.js', location.href).href);
+    if (!active()) return;
+    const payload = BahiPassbook.parseHash(hash, { allowDemo: true });
     let data;
     if (payload.d) {
       // Only ever an EXISTING demo on this device. Seeding one here would
@@ -1618,46 +1627,12 @@ async function renderPassbook(payload) {
         name: u.name,
         transactions: (demo.transactions || []).filter((t) => String(t.user_name) === String(payload.d)),
       };
-    } else {
-      const res = await fetch(payload.u, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ action: 'passbook', token: payload.t }),
-      });
-      const json = await res.json();
-      if (!json.ok) throw new Error(json.error || 'Could not load your passbook.');
-      data = json.data;
     }
-
-    $('pb-name').textContent = data.name;
-    const txns = data.transactions.slice()
-      .sort((a, b) => parseDate(b.date) - parseDate(a.date));
-    const bal = txns.reduce((s, t) => s + (t.type === 'received' ? -1 : 1) * (Number(t.amount) || 0), 0);
-    const amtEl = $('pb-amt');
-    amtEl.textContent = money(bal);
-    amtEl.className = 'balance-amt ' + (bal > 0 ? 'due' : bal < 0 ? 'adv' : '');
-    $('pb-word').textContent = bal > 0 ? 'to pay' : bal < 0 ? 'advance with shopkeeper' : 'settled up';
-
-    let lastMonth = '';
-    $('pb-list').innerHTML = txns.map((t) => {
-      const d = parseDate(t.date);
-      const monthKey = `${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
-      const divider = monthKey !== lastMonth ? `<li class="date-divider">— ${monthKey} —</li>` : '';
-      lastMonth = monthKey;
-      const side = t.type === 'received' ? 'got' : 'gave';
-      const cell = `<div class="txn-amt">${money(t.amount)}</div>` +
-        (t.comment ? `<div class="txn-note">${escapeHtml(t.comment)}</div>` : '') +
-        `<div class="txn-date">${fmtDate(t.date)}</div>`;
-      return `${divider}<li class="txn-row txn-ro">
-        <div class="txn-cell ${side === 'gave' ? 'gave' : ''}">${side === 'gave' ? cell : ''}</div>
-        <div class="txn-cell ${side === 'got' ? 'got' : ''}">${side === 'got' ? cell : ''}</div>
-      </li>`;
-    }).join('');
-    status.hidden = true;
+    await BahiPassbook.open(payload, { data, currency: (config && config.currency) || '₹', isActive: active });
   } catch (err) {
-    status.textContent = (err instanceof TypeError)
-      ? 'Could not reach the ledger — check your internet and reopen the link.'
-      : err.message;
+    if (!active()) return;
+    if (window.BahiPassbook) BahiPassbook.showError(err.message);
+    else status.textContent = 'The passbook could not load. Please refresh this page.';
   }
 }
 
@@ -1669,6 +1644,10 @@ function passbookLink(u) {
   // one is not a token at all: the passbook action refuses it, so offering the
   // link would hand out a dead link that reads as a working one.
   if (!u.token || String(u.token) === REVOKED_TOKEN) return '';
+  const compact = window.BahiPassbook?.createLink(location.href, config.url, String(u.token));
+  if (compact) return compact;
+  // Keep the lossless legacy format for nonstandard backend URLs or a mixed
+  // cached shell which has not loaded the new codec yet.
   return location.origin + location.pathname + '#p=' + b64url({ u: config.url, t: u.token });
 }
 

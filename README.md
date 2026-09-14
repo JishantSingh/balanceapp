@@ -24,6 +24,7 @@ There is no central server, no company in the middle, and nothing to pay — eve
 - **Up to five bill / parchi photos per entry** with v9 — camera or multi-file gallery, horizontally scrolling thumbnails, PIN-free viewing, and PIN-protected editing. Stored in a "Bahi Photos" folder in *your* Drive, never made public. Older backends retain one-photo controls.
 - **Share balance cards** — a large red/green PNG plus configurable WhatsApp text, with download/copy fallbacks. A successful ledger sync is required; no Business API or backend upgrade.
 - **Customer passbook links** — each reminder can carry a private read-only link where that customer sees their own ledger and live balance; revoke it anytime by clearing their `token` cell in the sheet
+- **Compact customer links** — canonical Google deployments use a shorter, customer-only `/p/` reader on the same site; existing long links still work. No URL-shortening provider, registry or new backend. [Format and testing](COMPACT-LINKS.md).
 - Tap-to-call customers
 - Works offline (shows last-synced data), installs to the Android home screen
 - **Offline write queue** — entries made without network are queued on the device and sync automatically when it returns; a "pending" chip shows the count
