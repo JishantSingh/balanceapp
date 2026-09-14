@@ -912,8 +912,8 @@ body {
   padding: 24px 0;
 }
 
-/* the merchant's own way out of a customer's passbook */
-.pb-mine { text-align: center; margin-top: 20px; }
+/* Suppress the retired shortcut even if both HTML and JS are still cached. */
+#pb-mine { display: none !important; }
 
 .pb-foot {
   text-align: center;

@@ -1599,9 +1599,6 @@ function applyPassbookLink() {
   } catch (e) { return false; }
   if (!payload.d && !(payload.u && payload.t)) return false;
   show('passbook');
-  // A merchant who taps their own customer's link would otherwise be stuck on
-  // a read-only screen with no way back to their khata.
-  $('pb-mine').hidden = !config;
   renderPassbook(payload);
   return true;
 }
@@ -3364,12 +3361,9 @@ function init() {
   // days) is same-document navigation — only hashchange ever hears about it
   window.addEventListener('hashchange', () => { closeCamera(); dispatchLink(); });
 
-  // the merchant's own way out of a customer's passbook (audit 1.1)
-  $('pb-mine-go').addEventListener('click', () => {
-    stripHash();
-    $('pb-mine').hidden = true;
-    bootLedger();
-  });
+  // Remove the retired owner shortcut, including when an older HTML shell
+  // is cached. This is UI removal, not an owner-app lock or storage isolation.
+  $('pb-mine')?.remove();
 
   // boot — a passbook link is a customer view; an invite link is a merchant connection
   if (!dispatchLink()) bootLedger();
