@@ -20,6 +20,7 @@ There is no central server, no company in the middle, and nothing to pay — eve
 - Customer list with **due / advance / settled** balances, search, totals
 - Per-customer two-column ledger (**You gave** / **You got**), month-wise
 - Add / edit / delete entries and customers (with double-tap confirm) — the buttons say **Given** (red) and **Received** (green)
+- **Choose customers from phone contacts** on supported browsers (primarily Android Chrome). Import one name/number into the Add/Edit draft, review, then Save. Manual entry stays available everywhere. [Compatibility and testing](CONTACTS.md).
 - **Up to five bill / parchi photos per entry** with v9 — camera or multi-file gallery, horizontally scrolling thumbnails, PIN-free viewing, and PIN-protected editing. Stored in a "Bahi Photos" folder in *your* Drive, never made public. Older backends retain one-photo controls.
 - **Share balance cards** — a large red/green PNG plus configurable WhatsApp text, with download/copy fallbacks. A successful ledger sync is required; no Business API or backend upgrade.
 - **Customer passbook links** — each reminder can carry a private read-only link where that customer sees their own ledger and live balance; revoke it anytime by clearing their `token` cell in the sheet

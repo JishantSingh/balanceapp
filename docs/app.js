@@ -52,6 +52,8 @@ let offline = false;                      // last network attempt failed
 let currentCustomerId = null;
 let editingTxnId = null;
 let editingCustomerId = null;
+let customerContactSession = null;
+let customerContactRequest = null; // native picker cannot be aborted; prevent overlapping requests
 let txnFormType = 'given';
 let confirmArmed = null;
 // bumped every time the ledger on this phone is replaced: anything in flight
@@ -1352,13 +1354,17 @@ function saveThumbs() {
 
 function goHome() {
   closeBalanceShare();
+  closeCustomerForm();
   currentCustomerId = null;
   show('home');
   renderHome();
 }
 
 function openCustomer(id, push) {
-  if (String(currentCustomerId) !== String(id)) closeBalanceShare();
+  if (String(currentCustomerId) !== String(id)) {
+    closeBalanceShare();
+    closeCustomerForm();
+  }
   currentCustomerId = id;
   show('customer');
   renderCustomer();
@@ -1414,6 +1420,7 @@ let pendingInvite = null;    // an invite waiting on the switch dialog
 
 function wipeLedgerData() {
   closeBalanceShare();
+  closeCustomerForm();
   ledgerGen++;   // whatever is on the wire now belongs to the khata we are leaving
   resetPhotoControls();
   [LS_CACHE, LS_QUEUE, LS_FAILED, LS_DEMO, LS_THUMBS].forEach((k) => localStorage.removeItem(k));
@@ -3206,6 +3213,16 @@ function init() {
   });
 
   // customer dialog
+  $('cust-contacts')?.addEventListener('click', pickCustomerContact);
+  $('cust-contact-cancel')?.addEventListener('click', () => {
+    if (!customerContactActive(customerContactSession)) return;
+    customerContactSession.choice = null;
+    paintCustomerContacts();
+    $('cust-contacts').focus();
+  });
+  ['cust-input-name', 'cust-input-phone'].forEach(id => {
+    $(id).addEventListener('input', () => contactNotice(''));
+  });
   // normalized readback as soon as the field is left, so the merchant sees the
   // number the reminder will actually use (audit 1.5)
   $('cust-input-phone').addEventListener('change', (e) => {
@@ -3221,6 +3238,10 @@ function init() {
       .catch(() => toast('Copy nahi ho paya', true));
   });
   $('form-customer').addEventListener('submit', (e) => {
+    if (customerContactSession?.picking || customerContactSession?.choice) {
+      e.preventDefault(); // also guard implicit/keyboard/programmatic form submission
+      return;
+    }
     const name = $('cust-input-name').value.trim();
     const errEl = $('cust-error');
     errEl.hidden = true;
@@ -3232,8 +3253,12 @@ function init() {
     }
     // A 7-digit number is a wa.me link that fails inside WhatsApp days later,
     // and junk text opens the contact picker — the balance goes to a stranger.
-    const checked = checkPhone($('cust-input-phone').value);
-    if (!checked.ok) {
+    const rawPhone = $('cust-input-phone').value;
+    const checked = checkPhone(rawPhone);
+    // An imported non-number must stay visible for correction, not silently
+    // become an empty phone. Leave existing manual-entry validation unchanged.
+    const invalidContactPhone = rawPhone && rawPhone === customerContactSession?.importedPhone && !checked.value;
+    if (!checked.ok || invalidContactPhone) {
       e.preventDefault();
       errEl.textContent = 'Phone number 10 digit ka hona chahiye';
       errEl.hidden = false;
@@ -3313,6 +3338,7 @@ function init() {
   // overlays back down to whatever is underneath it.
   document.querySelectorAll('dialog').forEach((d) => d.addEventListener('close', () => {
     if (d.id === 'dlg-txn' && !d.open) resetPhotoControls();
+    if (d.id === 'dlg-customer' && !d.open) resetCustomerContacts();
     disarmConfirm();
     moveOverlays();
   }));
@@ -3453,7 +3479,148 @@ function openTxnForm(type, txn) {
   if (!txn) $('txn-amount').focus();
 }
 
+// Contacts are an explicit, single-contact import into this draft only. No
+// address-book IDs, raw results, or unused numbers enter storage or the API.
+function customerContactActive(session) {
+  return !!(session && session === customerContactSession &&
+    session.ledger === ledgerGen && $('dlg-customer').open);
+}
+
+function paintCustomerContacts() {
+  if (!$('cust-contacts')) return; // safe with an older cached HTML shell
+  const s = customerContactSession;
+  const pending = !!(s?.picking || s?.choice);
+  $('cust-contacts').hidden = !s?.supported;
+  $('cust-contacts').disabled = pending || !!customerContactRequest;
+  $('cust-contacts').setAttribute('aria-expanded', String(!!s?.choice));
+  $('cust-contact-numbers').hidden = !s?.choice;
+  if (!s?.choice) {
+    $('cust-contact-options').replaceChildren();
+    $('cust-contact-name').textContent = '';
+  }
+  ['cust-input-name', 'cust-input-phone', 'cust-save', 'cust-delete'].forEach(id => {
+    $(id).disabled = pending;
+  });
+}
+
+function contactNotice(message, error = false) {
+  const el = $('cust-contact-status');
+  if (!el) return;
+  el.textContent = message;
+  el.hidden = !message;
+  el.classList.toggle('contact-error', error);
+}
+
+function resetCustomerContacts() {
+  customerContactSession = null;
+  contactNotice('');
+  paintCustomerContacts();
+}
+
+function closeCustomerForm() {
+  resetCustomerContacts();
+  if ($('dlg-customer')?.open) $('dlg-customer').close();
+}
+
+async function prepareCustomerContacts() {
+  const s = { ledger: ledgerGen, supported: false, picking: false, choice: null, importedPhone: null };
+  customerContactSession = s;
+  paintCustomerContacts();
+  if (!$('cust-contacts') || !window.isSecureContext || window.top !== window ||
+      typeof navigator.contacts?.select !== 'function' ||
+      typeof navigator.contacts?.getProperties !== 'function') return;
+  try {
+    // Resolve capabilities before the tap: no await may precede select() in
+    // its click handler, or Chrome can lose the required user activation.
+    const props = await navigator.contacts.getProperties();
+    if (!customerContactActive(s)) return;
+    s.supported = Array.isArray(props) && props.includes('name') && props.includes('tel');
+    paintCustomerContacts();
+  } catch (_) { /* unsupported/broken capability check: manual form stays usable */ }
+}
+
+function applyCustomerContact(s, name, rawPhone) {
+  if (!customerContactActive(s)) return;
+  const checked = checkPhone(rawPhone);
+  const invalid = !!rawPhone && (!checked.ok || !checked.value);
+  $('cust-input-name').value = name;
+  $('cust-input-phone').value = invalid ? rawPhone : checked.value;
+  s.importedPhone = $('cust-input-phone').value;
+  s.choice = null;
+  $('cust-error').hidden = true;
+  const notices = [];
+  if (!name.trim()) notices.push('No name shared — enter a name.');
+  if (!rawPhone) notices.push('No phone number shared — add one if needed.');
+  if (invalid) notices.push('Phone number 10 digit ka hona chahiye — please check it.');
+  contactNotice(notices.join(' '), invalid);
+  paintCustomerContacts();
+  // The native call's finally block enables fields before returning focus.
+  if (!s.picking) $(name.trim() ? 'cust-input-phone' : 'cust-input-name').focus();
+}
+
+async function pickCustomerContact() {
+  const s = customerContactSession;
+  if (!customerContactActive(s) || !s.supported || s.picking || s.choice || customerContactRequest) return;
+  const request = {};
+  customerContactRequest = request;
+  s.picking = true;
+  contactNotice('');
+  paintCustomerContacts();
+  let filled = false;
+  try {
+    const result = await navigator.contacts.select(['name', 'tel'], { multiple: false });
+    if (!customerContactActive(s)) return;
+    if (Array.isArray(result) && result.length === 0) return; // native cancellation
+    if (!Array.isArray(result) || result.length !== 1 || !result[0] || typeof result[0] !== 'object') {
+      throw new Error('Unexpected contact result');
+    }
+    const strings = values => Array.isArray(values) ? values.filter(v => typeof v === 'string' && v.trim()) : [];
+    const name = strings(result[0].name)[0] || '';
+    const numbers = [];
+    const seen = new Set();
+    for (const raw of strings(result[0].tel)) {
+      const checked = checkPhone(raw);
+      const key = checked.ok && checked.value ? checked.value : raw.trim();
+      if (!seen.has(key)) { seen.add(key); numbers.push(raw); }
+    }
+    if (numbers.length <= 1) {
+      applyCustomerContact(s, name, numbers[0] || '');
+      filled = true;
+    } else {
+      s.choice = { name, numbers };
+      $('cust-contact-name').textContent = name || 'Selected contact';
+      $('cust-contact-options').replaceChildren(...numbers.map(raw => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'contact-number';
+        const label = document.createElement('span');
+        label.textContent = raw;
+        const arrow = document.createElement('span');
+        arrow.textContent = '›';
+        arrow.setAttribute('aria-hidden', 'true');
+        button.append(label, arrow);
+        button.addEventListener('click', () => applyCustomerContact(s, name, raw));
+        return button;
+      }));
+    }
+  } catch (err) {
+    if (customerContactActive(s) && err?.name !== 'AbortError') {
+      contactNotice('Contacts could not be opened. Try again or enter the details manually.', true);
+    }
+  } finally {
+    if (customerContactRequest === request) customerContactRequest = null;
+    s.picking = false;
+    paintCustomerContacts();
+    if (customerContactActive(s)) {
+      if (s.choice) $('cust-contact-options').querySelector('button')?.focus();
+      else if (filled) $($('cust-input-name').value.trim() ? 'cust-input-phone' : 'cust-input-name').focus();
+      else $('cust-contacts').focus();
+    }
+  }
+}
+
 function openCustomerForm(id, prefillName) {
+  resetCustomerContacts();
   disarmConfirm();   // …nor into another customer
   editingCustomerId = id;
   const u = id ? db.users.find((x) => String(x.user_id) === String(id)) : null;
@@ -3466,6 +3633,7 @@ function openCustomerForm(id, prefillName) {
   $('cust-delete').textContent = 'Delete';
   $('cust-error').hidden = true;
   showSheet($('dlg-customer'));
+  prepareCustomerContacts();
   if (!u) $('cust-input-name').focus();
 }
 
